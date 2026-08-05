@@ -1,0 +1,53 @@
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net/' }
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'org.spongepowered:mixingradle:0.7.38'
+    }
+}
+
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0.24,6.2)'
+}
+
+apply plugin: 'org.spongepowered.mixin'
+
+version = '1.3.0'
+group = 'net.erutobusiness'
+base { archivesName = 'dynamicwaters_riverguard' }
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+}
+
+mixin {
+    add sourceSets.main, 'riverguard.refmap.json'
+    config 'riverguard.mixins.json'
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.3.0'
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+    // Mixin のターゲット解決用。実行時は同梱しない（利用者が入れている本体に当てる）
+    compileOnly files('libs/dynamicwaters.jar')
+}
+
+jar {
+    manifest {
+        attributes([
+            'Specification-Title'   : 'dynamicwaters_riverguard',
+            'Specification-Version' : '1',
+            'Implementation-Title'  : 'Dynamic Waters River Guard',
+            'Implementation-Version': project.version,
+            'MixinConfigs'          : 'riverguard.mixins.json'
+        ])
+    }
+}

@@ -1,0 +1,52 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+issueTrackerURL="https://github.com/erutobusiness"
+
+[[mixins]]
+config="riverguard.mixins.json"
+
+[[mods]]
+modId="riverguard"
+version="1.3.0"
+displayName="Dynamic Waters River Guard"
+authors="erutobusiness"
+description='''
+Builds Dynamic Waters' mountain rivers off the server thread.
+
+Dynamic Waters fills its mountain river network from ChunkWatchEvent.Watch, synchronously, on
+the server thread. On join that fires for every chunk in view distance, so the server generates
+the mountain rivers of about 36 regions (256 blocks each) before placing the player. Its region
+store is memory-only, so it goes cold on every restart and the first player to join pays for
+everyone -- to them it looks like falling through the world until the connection times out.
+
+Measured here, joining a freshly restarted world: 231,451 ms blocked with a cold cache, 7,909 ms
+with a warm one, 0 ms with enableMountainRivers = false.
+
+This mod cancels that handler and does the same work on worker threads, sending each region to
+the player once it is ready. Mountain rivers are kept; they arrive a few seconds after joining
+instead of holding it up. Terrain carving is untouched -- that already runs on worldgen threads.
+'''
+
+[[dependencies.riverguard]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="SERVER"
+
+[[dependencies.riverguard]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20.1,1.20.2)"
+    ordering="NONE"
+    side="SERVER"
+
+# Pinned deliberately: this mixin replaces onChunkWatch and leaves the mod's own SENT_REGIONS
+# map empty. Safe for 11.1.x, where only onChunkWatch and onPlayerLogout read it.
+[[dependencies.riverguard]]
+    modId="dynamicwaters"
+    mandatory=true
+    versionRange="[11.1,12)"
+    ordering="AFTER"
+    side="SERVER"
