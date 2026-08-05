@@ -54,12 +54,19 @@ public class RiverGuard {
     public void onServerStarted(ServerStartedEvent event) {
         // ⚠ ServerStarted, not ServerStarting: the overworld's spawn position and world border
         //    are only settled once the server has finished loading it.
-        MountainRiverScheduler.startBorderSweep(event.getServer(),
-                event.getServer().getLevel(Level.OVERWORLD));
+        net.minecraft.server.level.ServerLevel overworld = event.getServer().getLevel(Level.OVERWORLD);
+        int restored = RegionStore.load(overworld);
+        if (restored > 0) {
+            LOGGER.info("River Guard: loaded {} regions from disk — that much of the sweep is already done.",
+                    restored);
+        }
+        MountainRiverScheduler.startBorderSweep(event.getServer(), overworld);
     }
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
+        RegionStore.save();
+        RegionStore.clear();
         MountainRiverScheduler.stop();
     }
 
