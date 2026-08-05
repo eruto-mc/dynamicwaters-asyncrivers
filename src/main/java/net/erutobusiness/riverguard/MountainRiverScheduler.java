@@ -150,6 +150,7 @@ public final class MountainRiverScheduler {
         }
 
         int done = 0;
+        int skipped = 0;
         boolean wasPaused = false;
         for (int i = 0; i < order.size(); i += workerCount) {
             if (Thread.currentThread().isInterrupted() || workers == null) {
@@ -179,8 +180,18 @@ public final class MountainRiverScheduler {
             List<Future<?>> batch = new ArrayList<>();
             for (int j = i; j < Math.min(i + workerCount, order.size()); j++) {
                 int[] r = order.get(j);
-                batch.add(pool.submit(() -> HydrologyManager.getMountainRegionPaths(
-                        r[0], r[1], generator, level, randomState)));
+                if (RegionStore.has(r[0], r[1])) {
+                    // 前回の起動で作って保存してある。読み込み済みなので作り直さない
+                    skipped++;
+                    done++;
+                    continue;
+                }
+                batch.add(pool.submit(() -> {
+                    List<MountainRiverPath> built = HydrologyManager.getMountainRegionPaths(
+                            r[0], r[1], generator, level, randomState);
+                    RegionStore.remember(r[0], r[1], built);
+                    return built;
+                }));
             }
             for (Future<?> f : batch) {
                 try {
@@ -194,11 +205,14 @@ public final class MountainRiverScheduler {
                 done++;
             }
             if (done % 25 < workerCount) {
-                RiverGuard.LOGGER.info("River Guard: sweep {} / {} regions.", done, total);
+                RiverGuard.LOGGER.info("River Guard: sweep {} / {} regions ({} read from disk).",
+                        done, total, skipped);
+                RegionStore.save();   // 途中で落ちても、ここまでの分は次の起動で効く
             }
         }
-        RiverGuard.LOGGER.info("River Guard: sweep finished ({} regions). Joins inside the border no longer "
-                + "wait for mountain rivers to be built.", done);
+        RegionStore.save();
+        RiverGuard.LOGGER.info("River Guard: sweep finished ({} regions, {} of them read from disk). "
+                + "Joins inside the border no longer wait for mountain rivers to be built.", done, skipped);
     }
 
     /**
