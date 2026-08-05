@@ -6,8 +6,7 @@
   "refmap": "riverguard.refmap.json",
   "mixins": [
     "ModEventsMixin",
-    "HydrologyManagerMixin",
-    "SyncMountainRiversPacketAccessor"
+    "HydrologyManagerMixin"
   ],
   "injectors": {
     "defaultRequire": 1
