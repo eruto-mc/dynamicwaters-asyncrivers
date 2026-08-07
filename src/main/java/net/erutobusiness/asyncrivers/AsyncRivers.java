@@ -1,4 +1,4 @@
-package net.erutobusiness.riverguard;
+package net.erutobusiness.asyncrivers;
 
 import com.mojang.logging.LogUtils;
 import net.minecraft.world.level.Level;
@@ -11,7 +11,7 @@ import net.minecraftforge.fml.common.Mod;
 import org.slf4j.Logger;
 
 /**
- * Dynamic Waters River Guard — a one-fix compatibility mod.
+ * Dynamic Waters Async Rivers — a one-fix compatibility mod.
  *
  * <p>Dynamic Waters builds its mountain river network from {@code ChunkWatchEvent.Watch}, on the
  * server thread, synchronously. On join that fires for every chunk in view distance, so the server
@@ -35,13 +35,13 @@ import org.slf4j.Logger;
  *
  * <p>See {@code worlds/world-3/mod-notes/dynamicwaters.md} for the full investigation.
  */
-@Mod(RiverGuard.MOD_ID)
-public class RiverGuard {
+@Mod(AsyncRivers.MOD_ID)
+public class AsyncRivers {
 
-    public static final String MOD_ID = "riverguard";
+    public static final String MOD_ID = "asyncrivers";
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    public RiverGuard() {
+    public AsyncRivers() {
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
     }
 
@@ -54,7 +54,7 @@ public class RiverGuard {
     public void onServerStarted(ServerStartedEvent event) {
         // ⚠ ServerStarted, not ServerStarting: the overworld's spawn position and world border
         //    are only settled once the server has finished loading it.
-        MountainRiverScheduler.startBorderSweep(event.getServer(),
+        MountainRiverScheduler.startPreWarm(event.getServer(),
                 event.getServer().getLevel(Level.OVERWORLD));
     }
 

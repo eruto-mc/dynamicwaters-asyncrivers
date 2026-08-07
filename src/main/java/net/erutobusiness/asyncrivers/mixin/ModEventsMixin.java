@@ -1,7 +1,7 @@
-package net.erutobusiness.riverguard.mixin;
+package net.erutobusiness.asyncrivers.mixin;
 
 import com.AdamNew.dynamicwaters.DynamicWaters;
-import net.erutobusiness.riverguard.MountainRiverScheduler;
+import net.erutobusiness.asyncrivers.MountainRiverScheduler;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.event.level.ChunkWatchEvent;
@@ -51,7 +51,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public class ModEventsMixin {
 
     @Inject(method = "onChunkWatch", at = @At("HEAD"), cancellable = true, remap = false)
-    private static void riverguard$deferToWorker(ChunkWatchEvent.Watch event, CallbackInfo ci) {
+    private static void asyncrivers$deferToWorker(ChunkWatchEvent.Watch event, CallbackInfo ci) {
         ci.cancel();
 
         ServerPlayer player = event.getPlayer();

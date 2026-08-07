@@ -1,9 +1,9 @@
 {
   "required": true,
   "minVersion": "0.8",
-  "package": "net.erutobusiness.riverguard.mixin",
+  "package": "net.erutobusiness.asyncrivers.mixin",
   "compatibilityLevel": "JAVA_17",
-  "refmap": "riverguard.refmap.json",
+  "refmap": "asyncrivers.refmap.json",
   "mixins": [
     "ModEventsMixin",
     "HydrologyManagerMixin"

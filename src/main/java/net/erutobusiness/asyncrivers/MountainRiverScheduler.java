@@ -1,4 +1,4 @@
-package net.erutobusiness.riverguard;
+package net.erutobusiness.asyncrivers;
 
 import com.AdamNew.dynamicwaters.HydrologyManager;
 import com.AdamNew.dynamicwaters.MountainRiverPath;
@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>This mirrors what {@code DynamicWaters$ModEvents.onChunkWatch} does, with one difference:
  * the expensive part happens on a worker thread, and only the packet send is bounced back to
- * the server thread. {@link net.erutobusiness.riverguard.mixin.ModEventsMixin} cancels the
+ * the server thread. {@link net.erutobusiness.asyncrivers.mixin.ModEventsMixin} cancels the
  * original handler so the two never both run.
  *
  * <p><b>Why this is safe off-thread.</b> Dynamic Waters already calls
@@ -49,6 +49,23 @@ public final class MountainRiverScheduler {
 
     /** Dynamic Waters scans this many regions either side of the watched chunk's region. */
     private static final int REGION_SPAN = 2;
+
+    /**
+     * How many regions Dynamic Waters' {@code MOUNTAIN_REGION_CACHE} holds. Past this, pre-warming
+     * evicts what it just built, so we say so rather than pretending the far edge stays warm.
+     */
+    private static final int REGION_CACHE_CAPACITY = 2048;
+
+    /**
+     * Refuse to pre-warm past this radius, in regions (≈ 16,000 blocks).
+     *
+     * <p>This is a sanity check, not a tuning knob. A world with no border set reports vanilla's
+     * default of 59,999,968 blocks across — 117,188 regions of radius, 5.5e10 regions in total.
+     * Nothing real is that big, so a number in that range means "the border has not been set yet",
+     * which is exactly what a freshly created world looks like before the pre-generation tooling
+     * runs. Pre-warming there is not slow; it never finishes at all.
+     */
+    private static final int MAX_PREWARM_RADIUS_REGIONS = 64;
 
     /**
      * Regions already handed to each player, so a region is computed once per player per session.
@@ -75,13 +92,13 @@ public final class MountainRiverScheduler {
 
             @Override
             public Thread newThread(Runnable r) {
-                Thread t = new Thread(r, "riverguard-worker-" + n.incrementAndGet());
+                Thread t = new Thread(r, "asyncrivers-worker-" + n.incrementAndGet());
                 t.setDaemon(true);
                 t.setPriority(Thread.NORM_PRIORITY - 2);
                 return t;
             }
         });
-        RiverGuard.LOGGER.info("River Guard: mountain river regions will be built on {} worker thread(s).", threads);
+        AsyncRivers.LOGGER.info("Async Rivers: mountain river regions will be built on {} worker thread(s).", threads);
     }
 
     public static synchronized void stop() {
@@ -111,33 +128,67 @@ public final class MountainRiverScheduler {
      * roughly 8 minutes of empty-server time, and well inside the mod's 2,048-region cache.
      *
      * <p>On-demand work ({@link #onChunkWatched}) is never paused; it shares the same pool and gets
-     * it to itself whenever the sweep is holding off.
+     * it to itself whenever the pre-warm is holding off.
      */
-    public static void startBorderSweep(MinecraftServer server, ServerLevel level) {
+    public static void startPreWarm(MinecraftServer server, ServerLevel level) {
         ExecutorService pool = workers;
         if (pool == null || pool.isShutdown()) {
             return;
         }
-        Thread sweeper = new Thread(() -> sweep(server, level, pool), "riverguard-sweeper");
-        sweeper.setDaemon(true);
-        sweeper.setPriority(Thread.MIN_PRIORITY);
-        sweeper.start();
+        Thread preWarmer = new Thread(() -> preWarm(server, level, pool), "asyncrivers-prewarm");
+        preWarmer.setDaemon(true);
+        preWarmer.setPriority(Thread.MIN_PRIORITY);
+        preWarmer.start();
     }
 
-    private static void sweep(MinecraftServer server, ServerLevel level, ExecutorService pool) {
+    private static void preWarm(MinecraftServer server, ServerLevel level, ExecutorService pool) {
         BlockPos spawn = level.getSharedSpawnPos();
         int centerX = Math.floorDiv(spawn.getX(), REGION_SIZE);
         int centerZ = Math.floorDiv(spawn.getZ(), REGION_SIZE);
         ChunkGenerator generator = level.getChunkSource().getGenerator();
         RandomState randomState = level.getChunkSource().randomState();
 
-        int radius = (int) Math.ceil(level.getWorldBorder().getSize() / 2.0 / REGION_SIZE);
-        int total = (radius * 2 + 1) * (radius * 2 + 1);
-        RiverGuard.LOGGER.info(
-                "River Guard: sweeping {} regions out to the world border (radius {} regions) while the server is empty.",
+        double borderSize = level.getWorldBorder().getSize();
+        int radius = (int) Math.ceil(borderSize / 2.0 / REGION_SIZE);
+
+        // ⚠ ボーダーが設定されていないワールドでは、ここに入ってはいけない（2026-08-07 追加）。
+        //    バニラの既定は直径 59,999,968 で、半径 117,188 リージョン＝549億リージョンになる。
+        //    それ以前の版はこれを int で数えていたので total が溢れて **負数**になり
+        //    （実ログ: "sweeping -901996719 regions ... radius 117188 regions"）、
+        //    さらに全リージョンを ArrayList へ積む作りだったため、
+        //    先読みスレッドが延々とメモリを確保し続けて 1 リージョンも仕上げないまま回り続けた。
+        //    検証台本サーバの 33 本のログすべてと、本番同等サーバの新規ワールド初回起動で再現した。
+        if (radius > MAX_PREWARM_RADIUS_REGIONS) {
+            AsyncRivers.LOGGER.warn(
+                    "Async Rivers: pre-warm skipped — the world border is {} blocks across "
+                            + "({} regions of radius), which is past the {}-region limit. "
+                            + "This is what a world with no border set looks like. Set the border to the "
+                            + "pre-generated area (this server does that from pregen.py) and restart to enable it.",
+                    (long) borderSize, radius, MAX_PREWARM_RADIUS_REGIONS);
+            return;
+        }
+
+        long total = (2L * radius + 1L) * (2L * radius + 1L);
+        AsyncRivers.LOGGER.info(
+                "Async Rivers: pre-warming {} regions out to the world border (radius {} regions) while the server is empty.",
                 total, radius);
 
-        // 中心から外へ。近い場所ほど先に要るので、リングの順に並べる
+        if (total > REGION_CACHE_CAPACITY) {
+            // ⚠ 先読みしても、仕上げた端から Dynamic Waters 側のキャッシュから追い出される。
+            //    上限を付けるだけでは解決しない（外側が冷えるので遅さが移動するだけ）ので、
+            //    ここでは黙って進めず、数字を出して人に判断させる。
+            AsyncRivers.LOGGER.warn(
+                    "Async Rivers: {} regions is more than Dynamic Waters keeps ({}). "
+                            + "The outer ones will evict the inner ones as we go. Pre-warming anyway, "
+                            + "but the far edge will not stay warm.",
+                    total, REGION_CACHE_CAPACITY);
+        }
+
+        int done = 0;
+        boolean wasPaused = false;
+        // 中心から外へ。近い場所ほど先に要るので、リングの順に並べる。
+        // ⚠ 上の半径ガードで件数が抑えられているので、ここで一度に積んでよい。
+        //    ガードを緩めるなら、この積み方も同時に見直すこと（それが元の穴だった）。
         List<int[]> order = new ArrayList<>();
         for (int ring = 0; ring <= radius; ring++) {
             for (int dx = -ring; dx <= ring; dx++) {
@@ -149,8 +200,6 @@ public final class MountainRiverScheduler {
             }
         }
 
-        int done = 0;
-        boolean wasPaused = false;
         for (int i = 0; i < order.size(); i += workerCount) {
             if (Thread.currentThread().isInterrupted() || workers == null) {
                 return;
@@ -158,7 +207,7 @@ public final class MountainRiverScheduler {
             // Autopause と同じ約束: 人が居る間は進めない
             while (server.getPlayerList().getPlayerCount() > 0) {
                 if (!wasPaused) {
-                    RiverGuard.LOGGER.info("River Guard: player online — sweep paused at {} / {} regions.",
+                    AsyncRivers.LOGGER.info("Async Rivers: player online — pre-warm paused at {} / {} regions.",
                             done, total);
                     wasPaused = true;
                 }
@@ -170,7 +219,7 @@ public final class MountainRiverScheduler {
                 }
             }
             if (wasPaused) {
-                RiverGuard.LOGGER.info("River Guard: server empty again — sweep resumed at {} / {} regions.",
+                AsyncRivers.LOGGER.info("Async Rivers: server empty again — pre-warm resumed at {} / {} regions.",
                         done, total);
                 wasPaused = false;
             }
@@ -189,15 +238,15 @@ public final class MountainRiverScheduler {
                     Thread.currentThread().interrupt();
                     return;
                 } catch (Throwable t) {
-                    RiverGuard.LOGGER.warn("River Guard: a swept region failed to build", t);
+                    AsyncRivers.LOGGER.warn("Async Rivers: a pre-warmed region failed to build", t);
                 }
                 done++;
             }
             if (done % 25 < workerCount) {
-                RiverGuard.LOGGER.info("River Guard: sweep {} / {} regions.", done, total);
+                AsyncRivers.LOGGER.info("Async Rivers: pre-warmed {} / {} regions.", done, total);
             }
         }
-        RiverGuard.LOGGER.info("River Guard: sweep finished ({} regions). Joins inside the border no longer "
+        AsyncRivers.LOGGER.info("Async Rivers: pre-warm finished ({} regions). Joins inside the border no longer "
                 + "wait for mountain rivers to be built.", done);
     }
 
@@ -205,8 +254,8 @@ public final class MountainRiverScheduler {
      * Queues every not-yet-sent region around the watched chunk. Called on the server thread from
      * the mixin, and returns immediately — the generation itself happens on a worker.
      *
-     * <p>Never paused, unlike {@link #startBorderSweep}: this is work a player is actually waiting
-     * on, and the sweep steps aside while anyone is online.
+     * <p>Never paused, unlike {@link #startPreWarm}: this is work a player is actually waiting
+     * on, and the pre-warm steps aside while anyone is online.
      */
     public static void onChunkWatched(ServerPlayer player, ServerLevel level, int chunkX, int chunkZ) {
         ExecutorService pool = workers;
@@ -240,7 +289,7 @@ public final class MountainRiverScheduler {
                 } catch (Throwable t) {
                     // Could not even queue it. Release the claim so a later ChunkWatch retries.
                     claimed.remove(key);
-                    RiverGuard.LOGGER.warn("River Guard: could not queue region {},{}", regionX, regionZ, t);
+                    AsyncRivers.LOGGER.warn("Async Rivers: could not queue region {},{}", regionX, regionZ, t);
                 }
             }
         }
@@ -256,7 +305,7 @@ public final class MountainRiverScheduler {
             // ⚠ Release the claim. Without this the region is never retried and that player
             //    silently loses mountain river flow there for the rest of the session.
             claimed.remove(key);
-            RiverGuard.LOGGER.warn("River Guard: region {},{} failed to build", regionX, regionZ, t);
+            AsyncRivers.LOGGER.warn("Async Rivers: region {},{} failed to build", regionX, regionZ, t);
             return;
         }
 
@@ -272,7 +321,7 @@ public final class MountainRiverScheduler {
                         new SyncMountainRiversPacket(regionX, regionZ, paths));
             } catch (Throwable t) {
                 claimed.remove(key);
-                RiverGuard.LOGGER.warn("River Guard: region {},{} failed to send", regionX, regionZ, t);
+                AsyncRivers.LOGGER.warn("Async Rivers: region {},{} failed to send", regionX, regionZ, t);
             }
         });
     }

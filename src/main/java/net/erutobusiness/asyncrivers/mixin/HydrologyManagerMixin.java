@@ -1,4 +1,4 @@
-package net.erutobusiness.riverguard.mixin;
+package net.erutobusiness.asyncrivers.mixin;
 
 import com.AdamNew.dynamicwaters.HydrologyManager;
 import org.spongepowered.asm.mixin.Mixin;
@@ -29,7 +29,7 @@ import org.spongepowered.asm.mixin.injection.ModifyArg;
  * ticks, which players see as "I got in but the world is frozen".
  *
  * <p>Forcing {@code cachedOnly = true} here makes the flow tick use whatever
- * {@link net.erutobusiness.riverguard.MountainRiverScheduler} has finished building. A region that
+ * {@link net.erutobusiness.asyncrivers.MountainRiverScheduler} has finished building. A region that
  * is not ready yet simply produces no push for a moment; the workers fill it in seconds.
  *
  * <p><b>Deliberately not touched:</b> {@code calculateRiverCarving}, {@code isNearRiver} and
@@ -49,7 +49,7 @@ public class HydrologyManagerMixin {
                             + "Lcom/AdamNew/dynamicwaters/HydrologyManager$MountainRiverContext;"),
             index = 5,
             remap = false)
-    private static boolean riverguard$neverGenerateOnTheTick(boolean cachedOnly) {
+    private static boolean asyncrivers$neverGenerateOnTheTick(boolean cachedOnly) {
         return true;
     }
 }

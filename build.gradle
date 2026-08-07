@@ -14,9 +14,9 @@ plugins {
 
 apply plugin: 'org.spongepowered.mixin'
 
-version = '1.3.0'
+version = '2.0.0'
 group = 'net.erutobusiness'
-base { archivesName = 'dynamicwaters_riverguard' }
+base { archivesName = 'dynamicwaters_asyncrivers' }
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
 
@@ -29,8 +29,8 @@ minecraft {
 }
 
 mixin {
-    add sourceSets.main, 'riverguard.refmap.json'
-    config 'riverguard.mixins.json'
+    add sourceSets.main, 'asyncrivers.refmap.json'
+    config 'asyncrivers.mixins.json'
 }
 
 repositories {
@@ -52,11 +52,11 @@ dependencies {
 jar {
     manifest {
         attributes([
-            'Specification-Title'   : 'dynamicwaters_riverguard',
+            'Specification-Title'   : 'dynamicwaters_asyncrivers',
             'Specification-Version' : '1',
-            'Implementation-Title'  : 'Dynamic Waters River Guard',
+            'Implementation-Title'  : 'Dynamic Waters Async Rivers',
             'Implementation-Version': project.version,
-            'MixinConfigs'          : 'riverguard.mixins.json'
+            'MixinConfigs'          : 'asyncrivers.mixins.json'
         ])
     }
 }
