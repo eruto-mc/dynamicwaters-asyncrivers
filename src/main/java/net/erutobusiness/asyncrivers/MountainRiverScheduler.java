@@ -96,11 +96,18 @@ public final class MountainRiverScheduler {
     private static List<MountainRiverPath> obtain(int regionX, int regionZ, ChunkGenerator generator,
                                                   ServerLevel level, RandomState randomState) {
         long key = HydrologyManager.getRegionKey(regionX, regionZ);
+        MountainRegionStore s = store;
         List<MountainRiverPath> cached = HydrologyManager.MOUNTAIN_REGION_CACHE.asMap().get(key);
         if (cached != null) {
+            // ⚠ メモリに在るからといって、ディスクにも在るとは限らない。ワールド生成の彫り込みが
+            //    先に計算して載せた分がここに来る（実測 2026-08-07: 49 リージョンのうち 15 個が
+            //    これで、1周目にファイルが 34 個しか出来ていなかった）。その場を素通りさせると
+            //    **次の起動でまた計算する**ので、無ければここで書く。
+            if (s != null) {
+                s.writeIfAbsent(regionX, regionZ, cached);
+            }
             return cached;
         }
-        MountainRegionStore s = store;
         if (s != null) {
             List<MountainRiverPath> fromDisk = s.read(regionX, regionZ);
             if (fromDisk != null) {

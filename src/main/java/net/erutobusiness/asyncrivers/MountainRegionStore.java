@@ -72,9 +72,12 @@ public final class MountainRegionStore {
     public static MountainRegionStore open(ServerLevel level) {
         try {
             ResourceLocation dim = level.dimension().location();
-            Path dir = level.getServer().getWorldPath(LevelResource.ROOT)
+            // ⚠ normalize() を入れる。LevelResource.ROOT は "." なので、素で resolve すると
+            //    ".\world3-...\.\data\..." のような読みにくいパスがログに出る（動きはする）。
+            Path dir = level.getServer().getWorldPath(LevelResource.ROOT).normalize()
                     .resolve("data").resolve("asyncrivers").resolve("v" + FORMAT_VERSION)
-                    .resolve(dim.getNamespace() + "_" + dim.getPath());
+                    .resolve(dim.getNamespace() + "_" + dim.getPath())
+                    .toAbsolutePath().normalize();
             Files.createDirectories(dir);
             long stamp = stampFor(level);
             AsyncRivers.LOGGER.info("Async Rivers: region store at {} (stamp {}).",
@@ -155,6 +158,35 @@ public final class MountainRegionStore {
             // 壊れていても落とさない。作り直せば済む
             AsyncRivers.LOGGER.warn("Async Rivers: could not read region {},{} — rebuilding it.", regionX, regionZ, t);
             return null;
+        }
+    }
+
+    /**
+     * Writes a region only if there is no usable file for it yet.
+     *
+     * <p>For regions that arrived from somewhere else — world generation computes them while
+     * carving, and puts them in Dynamic Waters' memory cache — so that they survive the restart
+     * too. Checking the stamp matters: a file left over from a different seed or a different
+     * Dynamic Waters version is not "already there", it is something to replace.
+     */
+    public void writeIfAbsent(int regionX, int regionZ, List<MountainRiverPath> paths) {
+        if (hasCurrent(regionX, regionZ)) {
+            return;
+        }
+        write(regionX, regionZ, paths);
+    }
+
+    /** True when a file exists for this region and carries our stamp. */
+    private boolean hasCurrent(int regionX, int regionZ) {
+        Path p = fileFor(regionX, regionZ);
+        if (!Files.isReadable(p)) {
+            return false;
+        }
+        try (InputStream in = Files.newInputStream(p);
+             DataInputStream d = new DataInputStream(in)) {
+            return d.readInt() == MAGIC && d.readInt() == FORMAT_VERSION && d.readLong() == stamp;
+        } catch (Throwable t) {
+            return false;
         }
     }
 
