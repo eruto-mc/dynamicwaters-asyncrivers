@@ -212,20 +212,6 @@ public final class MountainRiverScheduler {
         }
 
         long total = (2L * radius + 1L) * (2L * radius + 1L);
-        AsyncRivers.LOGGER.info(
-                "Async Rivers: pre-warming {} regions out to the world border (radius {} regions) while the server is empty.",
-                total, radius);
-
-        if (total > REGION_CACHE_CAPACITY) {
-            // ⚠ 先読みしても、仕上げた端から Dynamic Waters 側のキャッシュから追い出される。
-            //    上限を付けるだけでは解決しない（外側が冷えるので遅さが移動するだけ）ので、
-            //    ここでは黙って進めず、数字を出して人に判断させる。
-            AsyncRivers.LOGGER.warn(
-                    "Async Rivers: {} regions is more than Dynamic Waters keeps ({}). "
-                            + "The outer ones will evict the inner ones as we go. Pre-warming anyway, "
-                            + "but the far edge will not stay warm.",
-                    total, REGION_CACHE_CAPACITY);
-        }
 
         int done = 0;
         boolean wasPaused = false;
@@ -233,14 +219,37 @@ public final class MountainRiverScheduler {
         // ⚠ 上の半径ガードで件数が抑えられているので、ここで一度に積んでよい。
         //    ガードを緩めるなら、この積み方も同時に見直すこと（それが元の穴だった）。
         List<int[]> order = new ArrayList<>();
+        outer:
         for (int ring = 0; ring <= radius; ring++) {
             for (int dx = -ring; dx <= ring; dx++) {
                 for (int dz = -ring; dz <= ring; dz++) {
                     if (Math.max(Math.abs(dx), Math.abs(dz)) == ring) {
+                        // ⚠ Dynamic Waters が持てる数で打ち切る。それ以上は載せた端から
+                        //    追い出されるので、先読みした意味が消える（README の「上限を付ける
+                        //    だけでは解決しない」はそのとおりで、ここでやっているのは
+                        //    **解決ではなく無駄の停止**）。中心から並べてあるので、
+                        //    残るのはスポーンに近い側＝人が居る確率が高い側になる。
+                        //    打ち切った外側も、必要になった時点でディスクから読めば済む。
+                        if (order.size() >= REGION_CACHE_CAPACITY) {
+                            break outer;
+                        }
                         order.add(new int[]{centerX + dx, centerZ + dz});
                     }
                 }
             }
+        }
+        final int planned = order.size();
+        if (planned < total) {
+            AsyncRivers.LOGGER.info(
+                    "Async Rivers: pre-warming the innermost {} of the {} regions inside the world border "
+                            + "(radius {} regions) — that is all Dynamic Waters keeps at once. "
+                            + "The rest load from disk when they are needed.",
+                    planned, total, radius);
+        } else {
+            AsyncRivers.LOGGER.info(
+                    "Async Rivers: pre-warming {} regions out to the world border (radius {} regions) "
+                            + "while the server is empty.",
+                    planned, radius);
         }
 
         for (int i = 0; i < order.size(); i += workerCount) {
@@ -251,7 +260,7 @@ public final class MountainRiverScheduler {
             while (server.getPlayerList().getPlayerCount() > 0) {
                 if (!wasPaused) {
                     AsyncRivers.LOGGER.info("Async Rivers: player online — pre-warm paused at {} / {} regions.",
-                            done, total);
+                            done, planned);
                     wasPaused = true;
                 }
                 try {
@@ -263,7 +272,7 @@ public final class MountainRiverScheduler {
             }
             if (wasPaused) {
                 AsyncRivers.LOGGER.info("Async Rivers: server empty again — pre-warm resumed at {} / {} regions.",
-                        done, total);
+                        done, planned);
                 wasPaused = false;
             }
 
@@ -285,7 +294,7 @@ public final class MountainRiverScheduler {
                 done++;
             }
             if (done % 25 < workerCount) {
-                AsyncRivers.LOGGER.info("Async Rivers: pre-warmed {} / {} regions.", done, total);
+                AsyncRivers.LOGGER.info("Async Rivers: pre-warmed {} / {} regions.", done, planned);
             }
         }
         AsyncRivers.LOGGER.info("Async Rivers: pre-warm finished ({} regions). Joins inside the border no longer "
