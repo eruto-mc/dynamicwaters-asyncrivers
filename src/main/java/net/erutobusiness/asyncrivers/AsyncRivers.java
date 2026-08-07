@@ -33,7 +33,8 @@ import org.slf4j.Logger;
  * region's packet from the server thread once it is ready. Mountain rivers are kept; they just
  * arrive a few seconds after joining instead of holding it up.
  *
- * <p>See {@code worlds/world-3/mod-notes/dynamicwaters.md} for the full investigation.
+ * <p>See the README for the disk format, why the pre-warm refuses to run on a world with no
+ * border set, and what is deliberately left alone.
  */
 @Mod(AsyncRivers.MOD_ID)
 public class AsyncRivers {
