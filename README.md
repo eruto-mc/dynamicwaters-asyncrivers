@@ -2,7 +2,7 @@
 
 Dynamic Waters の山岳河川づくりを**サーバスレッドから外す**当部MOD（サーバ専用）。
 
-調査の全文は [worlds/world-3/mod-notes/dynamicwaters.md](../../mod-notes/dynamicwaters.md)。
+調査の全文は作者側の記録にある（公開していない）。要点はこの README に写してある。
 
 ## 何を直したか
 
@@ -100,7 +100,7 @@ Dynamic Waters は `ChunkWatchEvent.Watch` の中で、見えたチャンクの�
 ⚠ **「復元後に見つからなかった」の記録自体が弱い**——この命令は**成功しかログに残らない**ので、
 復元回に撃った証拠が1行も無い。**やり直すなら両方の出力を RCON の戻り値で残すこと。**
 
-経緯と数値の全文は [mod-notes/dynamicwaters.md](../../mod-notes/dynamicwaters.md) の 1.5.0 の節。
+経緯と数値の全文は作者側の記録（1.5.0 の節）にある。
 
 ## 残っている課題: キャッシュ上限
 
