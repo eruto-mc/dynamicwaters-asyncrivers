@@ -77,6 +77,45 @@ public final class MountainRiverScheduler {
     private static volatile ExecutorService workers;
     private static volatile int workerCount = 1;
 
+    /** Disk-backed region store. {@code null} means "compute every time", which is still correct. */
+    private static volatile MountainRegionStore store;
+
+    /**
+     * Hands back a region's paths, preferring what is already known over rebuilding it.
+     *
+     * <p>Order: Dynamic Waters' own memory cache → our files on disk → build it.
+     *
+     * <p><b>Why put a disk hit back into Dynamic Waters' cache.</b> That cache is not just ours.
+     * Terrain carving reads it too, from worldgen threads ({@code calculateRiverCarving} asks for
+     * {@code cachedOnly=false}), and carving is where the expensive half of chunk generation goes.
+     * Loading a region from disk therefore speeds up chunk generation, not just the join.
+     *
+     * <p>Two workers can miss at once and both build the same region. That is fine: the result is
+     * deterministic, Guava's cache tolerates it, and the file write is atomic.
+     */
+    private static List<MountainRiverPath> obtain(int regionX, int regionZ, ChunkGenerator generator,
+                                                  ServerLevel level, RandomState randomState) {
+        long key = HydrologyManager.getRegionKey(regionX, regionZ);
+        List<MountainRiverPath> cached = HydrologyManager.MOUNTAIN_REGION_CACHE.asMap().get(key);
+        if (cached != null) {
+            return cached;
+        }
+        MountainRegionStore s = store;
+        if (s != null) {
+            List<MountainRiverPath> fromDisk = s.read(regionX, regionZ);
+            if (fromDisk != null) {
+                HydrologyManager.MOUNTAIN_REGION_CACHE.put(key, fromDisk);
+                return fromDisk;
+            }
+        }
+        List<MountainRiverPath> built =
+                HydrologyManager.getMountainRegionPaths(regionX, regionZ, generator, level, randomState);
+        if (s != null && built != null) {
+            s.write(regionX, regionZ, built);
+        }
+        return built;
+    }
+
     private MountainRiverScheduler() {
     }
 
@@ -107,6 +146,7 @@ public final class MountainRiverScheduler {
             workers = null;
         }
         CLAIMED.clear();
+        store = null;
     }
 
     public static void forget(UUID playerId) {
@@ -135,6 +175,9 @@ public final class MountainRiverScheduler {
         if (pool == null || pool.isShutdown()) {
             return;
         }
+        // ⚠ ここで開く（ServerStarted）。ワールドの保存先が決まっているのはこの時点から。
+        //    開けなくても続ける——毎回作り直すだけで、動きは以前と同じになる。
+        store = MountainRegionStore.open(level);
         Thread preWarmer = new Thread(() -> preWarm(server, level, pool), "asyncrivers-prewarm");
         preWarmer.setDaemon(true);
         preWarmer.setPriority(Thread.MIN_PRIORITY);
@@ -228,8 +271,7 @@ public final class MountainRiverScheduler {
             List<Future<?>> batch = new ArrayList<>();
             for (int j = i; j < Math.min(i + workerCount, order.size()); j++) {
                 int[] r = order.get(j);
-                batch.add(pool.submit(() -> HydrologyManager.getMountainRegionPaths(
-                        r[0], r[1], generator, level, randomState)));
+                batch.add(pool.submit(() -> obtain(r[0], r[1], generator, level, randomState)));
             }
             for (Future<?> f : batch) {
                 try {
@@ -300,7 +342,7 @@ public final class MountainRiverScheduler {
                               ServerLevel level, RandomState randomState) {
         List<MountainRiverPath> paths;
         try {
-            paths = HydrologyManager.getMountainRegionPaths(regionX, regionZ, generator, level, randomState);
+            paths = obtain(regionX, regionZ, generator, level, randomState);
         } catch (Throwable t) {
             // ⚠ Release the claim. Without this the region is never retried and that player
             //    silently loses mountain river flow there for the rest of the session.
