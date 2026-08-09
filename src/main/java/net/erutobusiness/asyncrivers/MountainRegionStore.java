@@ -17,6 +17,8 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Keeps built mountain-river regions on disk, so a region is computed once for the life of a world
@@ -60,9 +62,28 @@ public final class MountainRegionStore {
     private final Path root;
     private final long stamp;
 
+    /**
+     * Regions we already know are on disk carrying {@link #stamp}.
+     *
+     * <p><b>Why this exists.</b> {@link #writeIfAbsent} is called from world generation, once per
+     * region query — which during a pre-generation run means constantly. Without this set every
+     * one of those calls would open a file and read sixteen bytes just to answer "already there?",
+     * and the write-down would slow the very thing it is meant to speed up. Membership only ever
+     * grows, and only from places that have just proven the file is good, so a hit needs no I/O.
+     *
+     * <p>It is deliberately one-way: we never remove on a failed write. A region wrongly believed
+     * to be on disk is rebuilt next start, which is the cost this whole class exists to avoid but
+     * is still correct. A region wrongly believed to be absent would be rewritten every query.
+     */
+    private final Set<Long> onDisk = ConcurrentHashMap.newKeySet();
+
     private MountainRegionStore(Path root, long stamp) {
         this.root = root;
         this.stamp = stamp;
+    }
+
+    private static long key(int regionX, int regionZ) {
+        return ((long) regionX << 32) | (regionZ & 0xFFFFFFFFL);
     }
 
     /**
@@ -153,6 +174,8 @@ public final class MountainRegionStore {
                 paths.add(new MountainRiverPath(nodeCount, validNodeCount, hitMainRiver,
                         xs, zs, ys, terrainYs, widths));
             }
+            // ここまで来たのは印まで合っていた証拠。以後 writeIfAbsent はファイルを開かない
+            onDisk.add(key(regionX, regionZ));
             return paths;
         } catch (Throwable t) {
             // 壊れていても落とさない。作り直せば済む
@@ -170,7 +193,11 @@ public final class MountainRegionStore {
      * Dynamic Waters version is not "already there", it is something to replace.
      */
     public void writeIfAbsent(int regionX, int regionZ, List<MountainRiverPath> paths) {
+        if (onDisk.contains(key(regionX, regionZ))) {
+            return;                                   // 一番多い経路。ファイルには触らない
+        }
         if (hasCurrent(regionX, regionZ)) {
+            onDisk.add(key(regionX, regionZ));        // 前の起動で書いたもの。以後は上の行で済む
             return;
         }
         write(regionX, regionZ, paths);
@@ -217,6 +244,7 @@ public final class MountainRegionStore {
             } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                 Files.move(tmp, dst, StandardCopyOption.REPLACE_EXISTING);
             }
+            onDisk.add(key(regionX, regionZ));   // ⚠ move が通ってから。失敗時は覚えない
         } catch (Throwable t) {
             AsyncRivers.LOGGER.warn("Async Rivers: could not write region {},{}.", regionX, regionZ, t);
             try {

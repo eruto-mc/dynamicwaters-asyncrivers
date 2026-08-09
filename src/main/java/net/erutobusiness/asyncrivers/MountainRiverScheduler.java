@@ -123,6 +123,34 @@ public final class MountainRiverScheduler {
         return built;
     }
 
+    /**
+     * Writes down a region that someone else built, so the next start does not build it again.
+     *
+     * <p><b>Why this is not covered by {@link #obtain}.</b> Terrain carving does not go through
+     * {@code obtain} — {@code calculateRiverCarving} and friends call Dynamic Waters' own
+     * {@code getMountainRegionPaths} straight from world generation threads. Until this existed,
+     * the only regions that reached disk were the ones {@code obtain} happened to visit: the
+     * pre-warm's innermost {@value #REGION_CACHE_CAPACITY} and whatever a player walked into.
+     * A long unattended pre-generation run would carve tens of thousands of regions past that,
+     * every one of them landing in a 2048-entry memory cache and being evicted unrecorded — so the
+     * next start rebuilt them one slow query at a time.
+     *
+     * <p>{@link net.erutobusiness.asyncrivers.mixin.HydrologyManagerMixin} calls this on the way
+     * out of {@code getMountainRegionPaths}, which every caller passes through.
+     *
+     * <p><b>This must stay a pure observer.</b> It reads the finished return value and writes it
+     * down. It does not decide whether a region gets built, and it must never start doing so —
+     * carving asks with {@code cachedOnly = false} on purpose, and short-circuiting that changes
+     * the terrain that gets generated.
+     */
+    public static void rememberIfBuilt(int regionX, int regionZ, List<MountainRiverPath> paths) {
+        MountainRegionStore s = store;
+        if (s == null || paths == null) {
+            return;                 // 起動前・保存できない構成なら何もしない（今までどおり動く）
+        }
+        s.writeIfAbsent(regionX, regionZ, paths);
+    }
+
     private MountainRiverScheduler() {
     }
 
