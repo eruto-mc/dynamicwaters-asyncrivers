@@ -8,7 +8,12 @@ config="asyncrivers.mixins.json"
 
 [[mods]]
 modId="asyncrivers"
-version="2.0.0"
+# ⚠ ここに数字を書かない。jar のマニフェストの Implementation-Version を読む
+#    （build.gradle が project.version から入れている）。
+#    2026-08-10 まで "2.0.0" とべた書きしてあり、build.gradle を 2.1.0 に上げても
+#    **この行が古いままで、起動ログの MOD 一覧が 2.0.0 と出ていた**。
+#    版の正を2か所に置くと必ず片方が腐るので、参照に変えた。
+version="${file.jarVersion}"
 displayName="Dynamic Waters Async Rivers"
 authors="erutobusiness"
 description='''
