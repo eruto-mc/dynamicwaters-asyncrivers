@@ -29,6 +29,7 @@ Dynamic Waters は `ChunkWatchEvent.Watch` の中で、見えたチャンクの�
 | どこ | 何をするか |
 | - | - |
 | `DynamicWaters$ModEvents.onChunkWatch` | mixin で中止し、同じ仕事をワーカースレッドで行う。できたぶんからパケットを送る |
+| `DynamicWaters$ModEvents.onPlayerLogin` | **参加のたびに出る互換案内のチャットだけ**を落とす（下記・2.2.0） |
 | `HydrologyManager.getRiverFlow` | `cachedOnly` を `true` に固定する。**専用サーバでは `false` を渡す**作りで、毎tick その場で作りにいっていた |
 | 起動時（無人のあいだ） | ワールドボーダーの内側を中心から順に先読みして記録を埋める。**人が居る間は止まる** |
 | 全体 | 組んだリージョンを**ワールド配下のファイルに残し、次の起動から読み直す** |
@@ -81,6 +82,35 @@ Dynamic Waters 本体の `getMountainRegionPaths` を直接呼びます。無人
 ⚠ 費用について。この観測者はキャッシュに当たった呼び出しでも走るので、
 やることが無いときは限りなく安くある必要があります。「もうディスクに在る」の判定は
 **メモリ上の集合**で答えます。ファイルを触るのは、そのリージョンを初めて見たときだけです。
+
+### 参加のたびに出る互換案内を落とす（2.2.0）
+
+`onPlayerLogin` は3つのことをします。**前の2つは残し、3つ目だけを落とします。**
+
+1. `SENT_REGIONS` にその人の枠を作る — 残す
+2. **シードと海面高さのパケットを送る** — 残す（**これが無いとクライアント側の川が正しく描かれません**）
+3. 相手MODが入っていれば互換案内をチャットへ流す — **落とす**
+
+当部は Tectonic を入れているので、**毎回2行**出ていました。
+
+```text
+[Dynamic Waters] Compatibility with mod Tectonic is still beta.
+[Dynamic Waters] Tectonic underground rivers were automatically disabled for better performance.
+```
+
+⚠ **設定では消せません。** この4件（Tectonic 2・Lithosphere 1・Larion 1）は
+`ModList.isLoaded(...)` だけで分岐しており、**その経路に config の読み出しが1つもありません**
+（`dynamicwaters-11.1.2.jar` を逆アセンブルして確認）。
+
+⚠ **処理ごと中止してはいけません。** 2 が同じメソッドの中で先に走っているためです。
+だから `@Redirect` で**文字を送る呼び出しだけ**を無効にしています。
+
+⚠ **書いてある内容は本当のままです。** 挙動は何も変えておらず、知らせ方だけを変えています。
+地下河川を自動で切る設定（`disableTectonicUndergroundRivers`）は入のままです。
+
+⚠ **`require = 4` で件数を固定しています。** 上流が案内を増減させたら**読み込み時に大きく失敗**
+します。黙って宣伝が戻るより、止まって気づくほうを選びました。版の範囲を縛っているのは
+これを見落とさないためです。
 
 ## 先読み（無人時の下ごしらえ）
 
