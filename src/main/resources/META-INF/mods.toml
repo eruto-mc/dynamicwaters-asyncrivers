@@ -31,6 +31,12 @@ with a warm one, 0 ms with enableMountainRivers = false.
 This mod cancels that handler and does the same work on worker threads, sending each region to
 the player once it is ready. Mountain rivers are kept; they arrive a few seconds after joining
 instead of holding it up. Terrain carving is untouched -- that already runs on worldgen threads.
+
+It also stops Dynamic Waters from deleting structures that generate near a river, and
+slides them sideways to the driest spot instead. Measured over 22,201 chunks the
+deletion cost 39 structure starts and 3 of 5 villages, while the rivers themselves
+cover 1.19% of the surface -- and the carver already refuses to cut into a structure,
+so the deletion was not what protected them.
 '''
 
 [[dependencies.asyncrivers]]

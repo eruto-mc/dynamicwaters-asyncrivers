@@ -4,6 +4,7 @@ import net.erutobusiness.asyncrivers.AsyncRiversConfig;
 import net.erutobusiness.asyncrivers.RiverMask;
 import net.minecraft.core.Holder;
 import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.biome.Biome;
@@ -37,35 +38,52 @@ import java.util.function.Predicate;
  * here declares), and Dynamic Waters carves that beard away afterwards in {@code buildSurface}.
  * The houses end up over water with the ground between them cut out.
  *
- * <p>So: move it. Try a ring of offsets outwards; take the first that clears the river.
- * <b>If nothing clears, keep the structure where it is</b> — never delete. The worst case is
- * today's behaviour, not yesterday's.
+ * <p>So: move it to wherever the least water sits under it. <b>If nothing is better, keep the
+ * structure where it is</b> — never delete.
  *
- * <p><b>What changed in 2.7.0, and why the two attempts before it did nothing.</b> Both earlier
- * versions asked a question that could not see the water.
+ * <p><b>Three questions were tried before this one worked.</b>
  *
  * <ul>
  *   <li>v2 asked {@code HydrologyManager.isTooCloseToRiver} with the whole bounding box. That
- *       method tests <b>nine points</b> of the box, not the box.</li>
- *   <li>v3 added a river-<i>biome</i> check on top. Measured afterwards, the two villages it was
- *       written for contain <b>zero</b> river-biome cells — 651/651 columns of one are
- *       {@code terralith:alpine_highlands} and 506/506 of the other are
- *       {@code terralith:forested_highlands}. Comparing the v2 and v3 worlds structure by
- *       structure: same 144 starts, same positions but four, none of them a village. The biome
- *       check changed nothing because there was nothing of that kind to find.</li>
+ *       method tests <b>nine points</b> of the box — four corners, four edge midpoints, centre.
+ *       On an 80x120 village that misses water covering 8% of its columns.</li>
+ *   <li>v3 added a river-<i>biome</i> check. The two villages it was written for contain
+ *       <b>zero</b> river-biome cells; the water there is carved, not biome-driven. Diffing the
+ *       v2 and v3 worlds: same 144 starts, four moved, no villages.</li>
+ *   <li>v4 tried {@code calculateRiverCarving}, the carve itself. {@code RIVER_BED_NOISE} is
+ *       still {@code null} while structures are placed — NPE on the first column.</li>
  * </ul>
  *
- * <p>The water is real — 8.1% and 4.3% of those villages' columns have water at y=62 — it is just
- * carved rather than biome-driven, and sparse enough that nine points miss it. So 2.7.0 drops the
- * biome question entirely and samples the carve geometry on a grid ({@link RiverMask}).
+ * <p>What works is Dynamic Waters' geometry with our own threshold, sampled on a grid: see
+ * {@link net.erutobusiness.asyncrivers.RiverProbe#inRiverChannel} and {@link RiverMask}.
  *
- * <p><b>Why the distance is capped.</b> Vanilla collects a chunk's structure references from
- * within 8 chunks (128 blocks). Move a start further than that and pieces land in chunks that
- * never learn about it, so parts of the structure silently fail to generate. The cap keeps a wide
- * margin under that.
+ * <p><b>How far it may move, and why that is no longer a fixed budget.</b> Vanilla's
+ * {@code ChunkGenerator} collects a chunk's structure references from start chunks within
+ * <b>8 chunks</b>. A piece landing outside that window sits in a chunk which never learns the
+ * structure exists, so it silently fails to generate. Earlier versions turned that into a scalar,
+ * {@code 128 - halfWidth - 16}, and the 16-block margin was a guess.
+ *
+ * <p>Measured on the burned world, that guess cost a village. {@code ctov:large/village_taiga}
+ * got a budget of 40, so the search tried 16 and 32 blocks and stopped. It took the best of those
+ * — and it genuinely was the best of the 17 candidates it could see — and still sat on water.
+ * Counting real water columns at every offset afterwards:
+ *
+ * <pre>
+ *   move   wet columns
+ *      0   113  (17.4%)   staying put
+ *     32    50  ( 7.7%)   what it chose, best within its budget
+ *     48    12  ( 1.8%)   one step further
+ *     64     8  ( 1.2%)
+ *    128     7  ( 1.1%)   vanilla's limit
+ * </pre>
+ *
+ * <p>One more step would have removed three quarters of the remaining water, and it was well
+ * inside vanilla's window. So the scalar is gone: every candidate is now checked directly against
+ * the reference window by {@link #asyncrivers$withinReferenceRange}. Nothing here exceeds what
+ * vanilla allows — what went is the margin that was throwing usable distance away.
  *
  * <p><b>Why {@code move} and not just rewriting the box.</b> {@code PoolElementStructurePiece} —
- * which is what jigsaw structures like villages are made of — overrides
+ * what jigsaw structures like villages are made of — overrides
  * {@link StructurePiece#move(int, int, int)} to shift its placement position as well as its
  * bounding box. Rewriting boxes alone would leave the blocks behind.
  */
@@ -78,30 +96,26 @@ public abstract class StructureNudgeMixin {
     /** Step size when searching outwards. */
     private static final int ASYNCRIVERS$STEP = 16;
 
-    /** Vanilla collects a chunk's structure references from within 8 chunks. */
-    private static final int ASYNCRIVERS$REFERENCE_RADIUS = 128;
-
-    /** Left unused so a rounding error can never push a piece past the radius. */
-    private static final int ASYNCRIVERS$MARGIN = 16;
-
-    /**
-     * How far this structure may travel before parts of it stop generating.
-     *
-     * <p>The 128-block limit is measured <b>from the start's own chunk</b>, and a structure's
-     * far edge is already half its own width away from that. So the budget is what remains after
-     * the structure pays for its own size — a wide village can move much less than a small
-     * underground cabin, and a first attempt that used one fixed distance for everything moved
-     * every cabin and not a single village.
-     */
-    private static int asyncrivers$budget(BoundingBox box) {
-        int half = Math.max((box.maxX() - box.minX()) / 2, (box.maxZ() - box.minZ()) / 2);
-        return ASYNCRIVERS$REFERENCE_RADIUS - half - ASYNCRIVERS$MARGIN;
-    }
-
     /** Eight compass directions, as (x, z) unit offsets. */
     private static final int[][] ASYNCRIVERS$DIRS = {
             {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1},
     };
+
+    /**
+     * Whether every chunk this box touches is close enough to the start chunk that vanilla will
+     * hand it a reference.
+     *
+     * <p>This is the real constraint, checked directly, instead of approximated by a scalar
+     * budget. The window is {@code AsyncRiversConfig.referenceChunks()} either way — vanilla's
+     * own 8 by default.
+     */
+    private static boolean asyncrivers$withinReferenceRange(BoundingBox box, ChunkPos start) {
+        int r = AsyncRiversConfig.referenceChunks();
+        return SectionPos.blockToSectionCoord(box.minX()) >= start.x - r
+                && SectionPos.blockToSectionCoord(box.maxX()) <= start.x + r
+                && SectionPos.blockToSectionCoord(box.minZ()) >= start.z - r
+                && SectionPos.blockToSectionCoord(box.maxZ()) <= start.z + r;
+    }
 
     @Inject(method = "generate", at = @At("RETURN"))
     private void asyncrivers$nudgeOffRiver(
@@ -119,13 +133,9 @@ public abstract class StructureNudgeMixin {
             return;
         }
         BoundingBox box = start.getBoundingBox();
-        int budget = asyncrivers$budget(box);
-        if (budget < ASYNCRIVERS$STEP) {
-            return;                                   // 1歩も動けない。測る意味が無い
-        }
 
         // ⚠⚠ **安い問いを先に出す。** 川と無関係な構造物にまで
-        //    「箱＋移動予算」の全域（村なら 600 柱超）を走らせていたので、
+        //    「箱＋動ける範囲」の全域（村なら 600 柱超）を走らせていたので、
         //    ⚠ 焼き用サーバが**9分経っても起動を終えなかった**（spark も計測に失敗し続けた）。
         //    ここで見るのは箱だけ（村で 176 柱）。動かす気になった数件だけが広い走査を払う。
         RiverMask probe = RiverMask.sampleBoxOnly(
@@ -133,18 +143,20 @@ public abstract class StructureNudgeMixin {
                 AsyncRiversConfig.riverProbeStep(),
                 AsyncRiversConfig.riverProbeMaxSamples(),
                 AsyncRiversConfig.riverChannelFactor(),
+                AsyncRiversConfig.riverMaxHeightDelta(),
                 generator, level, randomState);
         if (probe.wetCountIn(box) == 0) {
             return;                                   // 水に触れていない。何もしない
         }
 
         // ⚠ 候補は全部この範囲に収まるので、格子は**1回だけ**採る。
-        //    候補ごとに聞くと同じ問い合わせを数千回繰り返すことになる。
+        int reach = AsyncRiversConfig.referenceChunks() * 16;
         RiverMask mask = RiverMask.sample(
-                box, budget,
+                box, reach,
                 AsyncRiversConfig.riverProbeStep(),
                 AsyncRiversConfig.riverProbeMaxSamples(),
                 AsyncRiversConfig.riverChannelFactor(),
+                AsyncRiversConfig.riverMaxHeightDelta(),
                 AsyncRiversConfig.riverProbeCompare(),
                 generator, level, randomState);
 
@@ -154,19 +166,32 @@ public abstract class StructureNudgeMixin {
         }
 
         // ⚠ **ゼロを要求しない。**「最も濡れない位置」を選ぶ。
-        //    2.7.0 は「濡れたセルが1つも無い移動先」を条件にしていて、
-        //    ⚠ 小さい構造物は9件動いたのに**村は1件も動かなかった**。
-        //    村の箱は 80x120 あり、周りが 15% 濡れているだけで
-        //    32通りの候補すべてがどこかで川に当たるため。
+        //    ゼロを条件にしていた版では、小さい構造物は9件動いたのに**村は1件も動かなかった**。
+        //    周りが 15% 濡れているだけで、80x120 の箱は候補すべてでどこかが川に当たるため。
         //    近い候補から順に見て、**厳密に良いときだけ**更新するので、同点なら近いほうが勝つ。
         int bestWet = here;
         int bestDx = 0;
         int bestDz = 0;
-        for (int stride = ASYNCRIVERS$STEP; stride <= budget; stride += ASYNCRIVERS$STEP) {
+        int fits = 0;
+        int refusedByGround = 0;
+        for (int stride = ASYNCRIVERS$STEP; stride <= reach; stride += ASYNCRIVERS$STEP) {
             for (int[] dir : ASYNCRIVERS$DIRS) {
                 int dx = dir[0] * stride;
                 int dz = dir[1] * stride;
-                int wet = mask.wetCountIn(box.moved(dx, 0, dz));
+                BoundingBox moved = box.moved(dx, 0, dz);
+                // ⚠ 予算を先に丸めず、候補ごとに**バニラの窓に収まるか**を直接見る。
+                if (!asyncrivers$withinReferenceRange(moved, chunkPos)) {
+                    continue;
+                }
+                // ⚠⚠ **地面が動く先へは移さない。** move() は水平にしか動かさないので、
+                //    地面の高さが変われば家がその分だけ埋まる／浮く。
+                //    山岳村を +32,+32 動かして地面が +5 上がり、家が全部沈んだ。
+                if (mask.groundShift(box, dx, dz) > AsyncRiversConfig.maxGroundShift()) {
+                    refusedByGround++;
+                    continue;
+                }
+                fits++;
+                int wet = mask.wetCountIn(moved);
                 if (wet < bestWet) {
                     bestWet = wet;
                     bestDx = dx;
@@ -177,11 +202,11 @@ public abstract class StructureNudgeMixin {
 
         if (bestDx == 0 && bestDz == 0) {
             // ⚠ 黙って諦めると「ずらしが効いていない」と「動いても良くならない」の区別がつかない。
-            //    2.6.0 まではこれが分からず、効果の無い変更を2回重ねた。
             ASYNCRIVERS$LOG.info(
                     "stayed: {} at {} already the driest, {} wet under it,"
-                            + " budget {}, area water {}/{}, proximity {}/{} (step {})",
-                    start.getStructure(), chunkPos, here, budget,
+                            + " {} candidates fit, {} refused by ground,"
+                            + " area water {}/{}, proximity {}/{} (step {})",
+                    start.getStructure(), chunkPos, here, fits, refusedByGround,
                     mask.wetCount(), mask.size(), mask.nearCount(), mask.size(), mask.step());
             return;
         }
@@ -196,8 +221,10 @@ public abstract class StructureNudgeMixin {
         ((StructureStartAccessor) (Object) start).asyncrivers$setCachedBoundingBox(null);
         ASYNCRIVERS$LOG.info(
                 "moved {} at {} by {},{}: {} -> {} wet under it,"
-                        + " budget {}, area water {}/{}, proximity {}/{} (step {})",
-                start.getStructure(), chunkPos, bestDx, bestDz, here, bestWet, budget,
+                        + " {} candidates fit, {} refused by ground,"
+                        + " area water {}/{}, proximity {}/{} (step {})",
+                start.getStructure(), chunkPos, bestDx, bestDz, here, bestWet, fits,
+                refusedByGround,
                 mask.wetCount(), mask.size(), mask.nearCount(), mask.size(), mask.step());
     }
 }

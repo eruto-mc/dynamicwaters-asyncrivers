@@ -2,6 +2,7 @@ package net.erutobusiness.asyncrivers;
 
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
@@ -41,9 +42,10 @@ public final class RiverMask {
     private final int cellsZ;
     private final boolean[] wet;
     private final boolean[] near;
+    private final int[] ground;
 
     private RiverMask(int originX, int originZ, int step, int cellsX, int cellsZ,
-                      boolean[] wet, boolean[] near) {
+                      boolean[] wet, boolean[] near, int[] ground) {
         this.originX = originX;
         this.originZ = originZ;
         this.step = step;
@@ -51,6 +53,7 @@ public final class RiverMask {
         this.cellsZ = cellsZ;
         this.wet = wet;
         this.near = near;
+        this.ground = ground;
     }
 
     /**
@@ -63,8 +66,9 @@ public final class RiverMask {
      * deserves to be able to say so.
      */
     public static RiverMask sample(BoundingBox box, int reach, int step, int maxSamples,
-                                   double factor, boolean compare, ChunkGenerator generator,
-                                   LevelHeightAccessor level, RandomState randomState) {
+                                   double factor, int heightDelta, boolean compare,
+                                   ChunkGenerator generator, LevelHeightAccessor level,
+                                   RandomState randomState) {
         int minX = box.minX() - reach;
         int minZ = box.minZ() - reach;
         int spanX = (box.maxX() + reach) - minX;
@@ -79,18 +83,74 @@ public final class RiverMask {
         int cellsZ = (spanZ / use) + 1;
         boolean[] wet = new boolean[cellsX * cellsZ];
         boolean[] near = compare ? new boolean[cellsX * cellsZ] : null;
+        int[] ground = new int[cellsX * cellsZ];
         for (int ix = 0; ix < cellsX; ix++) {
             int x = minX + ix * use;
             for (int iz = 0; iz < cellsZ; iz++) {
                 int z = minZ + iz * use;
                 int at = ix * cellsZ + iz;
-                wet[at] = RiverProbe.inRiverChannel(x, z, factor, generator, level, randomState);
+                // ⚠⚠ **地面の高さを先に採る。** 2つの用途がある:
+                //    ① 川の判定に高さを渡す（谷底の川で山頂が濡れ扱いになるのを止める）
+                //    ② 移動で地面がどれだけ動くかを測る（{@link #groundShift}）
+                ground[at] = generator.getBaseHeight(
+                        x, z, Heightmap.Types.WORLD_SURFACE_WG, level, randomState);
+                wet[at] = RiverProbe.inRiverChannel(x, z, factor, ground[at], heightDelta,
+                        generator, level, randomState);
                 if (near != null) {
                     near[at] = RiverProbe.nearRiver(x, z, 0, generator, level, randomState);
                 }
             }
         }
-        return new RiverMask(minX, minZ, use, cellsX, cellsZ, wet, near);
+        return new RiverMask(minX, minZ, use, cellsX, cellsZ, wet, near, ground);
+    }
+
+    /**
+     * How much the ground under this box would rise or fall if the structure moved by
+     * {@code (dx, dz)} — the median over the sampled columns, in blocks.
+     *
+     * <p><b>Why this decides anything.</b> {@code StructurePiece.move(dx, 0, dz)} moves a piece
+     * <b>horizontally only</b>; its Y is fixed when the structure is laid out. On flat ground that
+     * is harmless. On a mountain it is not: the houses stay at their old height while the ground
+     * beneath them changes, and they end up buried or floating.
+     *
+     * <p>Measured on {@code ctov:large/village_mountain} at chunk (-61, 35), which this nudge moved
+     * by +32,+32 to cut its wet columns from 58 to 37. The ground's median height there goes from
+     * <b>247 to 252</b>. The village's pieces stayed at Y 197..275 in both worlds — so every house
+     * sank five blocks into the hillside. Comparing the two burns by eye, the earlier one (which
+     * did not move it) looks right and this one has houses in the ground.
+     *
+     * <p>The relief of the box does not catch this: the moved position is actually <i>flatter</i>
+     * (96 blocks of relief against 112). What matters is not how rough the destination is but how
+     * far its ground sits from the ground the structure was built for.
+     */
+    public int groundShift(BoundingBox box, int dx, int dz) {
+        int fromX = index(box.minX() - originX);
+        int toX = Math.min(cellsX - 1, (box.maxX() - originX) / step);
+        int fromZ = index(box.minZ() - originZ);
+        int toZ = Math.min(cellsZ - 1, (box.maxZ() - originZ) / step);
+        int shiftX = dx / step;
+        int shiftZ = dz / step;
+        int[] diffs = new int[Math.max(1, (toX - fromX + 1) * (toZ - fromZ + 1))];
+        int n = 0;
+        for (int ix = fromX; ix <= toX; ix++) {
+            int jx = ix + shiftX;
+            if (jx < 0 || jx >= cellsX) {
+                continue;
+            }
+            for (int iz = fromZ; iz <= toZ; iz++) {
+                int jz = iz + shiftZ;
+                if (jz < 0 || jz >= cellsZ) {
+                    continue;
+                }
+                diffs[n++] = ground[jx * cellsZ + jz] - ground[ix * cellsZ + iz];
+            }
+        }
+        if (n == 0) {
+            return Integer.MAX_VALUE;                 // 測れないなら動かさない側へ倒す
+        }
+        int[] used = java.util.Arrays.copyOf(diffs, n);
+        java.util.Arrays.sort(used);
+        return Math.abs(used[n / 2]);
     }
 
     /**
@@ -108,9 +168,10 @@ public final class RiverMask {
      * only when there is actually something to move.
      */
     public static RiverMask sampleBoxOnly(BoundingBox box, int step, int maxSamples, double factor,
-                                          ChunkGenerator generator, LevelHeightAccessor level,
-                                          RandomState randomState) {
-        return sample(box, 0, step, maxSamples, factor, false, generator, level, randomState);
+                                          int heightDelta, ChunkGenerator generator,
+                                          LevelHeightAccessor level, RandomState randomState) {
+        return sample(box, 0, step, maxSamples, factor, heightDelta, false,
+                generator, level, randomState);
     }
 
     /** The spacing actually used, which may be coarser than asked for. */

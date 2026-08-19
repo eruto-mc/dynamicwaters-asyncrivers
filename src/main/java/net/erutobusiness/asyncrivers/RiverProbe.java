@@ -72,20 +72,27 @@ public final class RiverProbe {
      * counts came back 296/609 where they should have been far apart, and only the identical
      * figures gave it away.
      */
-    public static boolean inRiverChannel(int x, int z, double factor, ChunkGenerator generator,
+    public static boolean inRiverChannel(int x, int z, double factor, int groundY,
+                                         int maxHeightDelta, ChunkGenerator generator,
                                          LevelHeightAccessor level, RandomState randomState) {
         RAW.set(Boolean.TRUE);
         try {
             HydrologyManager.RiverContext river = HydrologyManager.evaluateRiverContext(x, z);
+            // ⚠⚠ **高さを見る。** `evaluateRiverContext` は引数に Y を取らない＝水平だけの問い。
+            //    高さを見ないと、**谷底の川が真上の山頂を「川の上」にしてしまう**。
+            //    平地の川は海面に彫られるので、そこと比べる。
             if (river != null && river.bestFractal != null
-                    && river.distance < river.width * factor) {
+                    && river.distance < river.width * factor
+                    && Math.abs(groundY - HydrologyManager.getSeaLevel()) <= maxHeightDelta) {
                 return true;
             }
             HydrologyManager.MountainRiverContext mountain =
                     HydrologyManager.evaluateMountainRiverContext(
                             x, z, generator, level, randomState, false);
+            // ⚠ 山岳河川は自分の高さ（bestY）を持っている。これも使っていなかった。
             return mountain != null && mountain.bestPath != null
-                    && mountain.distance < mountain.width * factor;
+                    && mountain.distance < mountain.width * factor
+                    && Math.abs(groundY - mountain.bestY) <= maxHeightDelta;
         } catch (RuntimeException | LinkageError e) {
             if (FELL_BACK.compareAndSet(false, true)) {
                 LOG.warn("⚠ inRiverChannel が使えないので近接判定に退避する"

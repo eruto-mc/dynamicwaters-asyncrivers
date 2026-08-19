@@ -67,6 +67,40 @@ public final class AsyncRiversConfig {
                      "river's width, so a river cannot pass through a box unsampled.")
             .defineInRange("riverProbeStep", 8, 1, 64);
 
+    public static final ForgeConfigSpec.IntValue RIVER_MAX_HEIGHT_DELTA = BUILDER
+            .comment("How far above or below a column's ground a river may run and still count as",
+                     "being under it. Dynamic Waters' river query takes no Y at all -- it is purely",
+                     "horizontal -- so without this a river in the valley makes the mountaintop",
+                     "directly above it read as 'on a river'.",
+                     "Measured: on ctov:large/village_mountain, ground median 247, the probe counted",
+                     "58 wet columns where the burned world holds water in 9. Six times too many,",
+                     "all of it from a river about 185 blocks below.",
+                     "Flat rivers are compared against sea level; mountain rivers carry their own.")
+            .defineInRange("riverMaxHeightDelta", 16, 1, 320);
+
+    public static final ForgeConfigSpec.IntValue MAX_GROUND_SHIFT = BUILDER
+            .comment("How many blocks the ground under a structure may rise or fall when it moves.",
+                     "StructurePiece.move() shifts a piece horizontally only -- its Y was fixed when",
+                     "the structure was laid out. On flat ground that is harmless; on a mountain the",
+                     "houses stay put while the hillside moves under them and they end up buried.",
+                     "Measured: ctov:large/village_mountain was moved +32,+32 to cut its wet columns",
+                     "from 58 to 37, and the ground's median height went 247 -> 252. Five blocks was",
+                     "enough to sink every house. Candidates whose median shift exceeds this are",
+                     "refused, so a structure on steep ground simply stays where it is.",
+                     "0 would refuse every move that changes the ground at all.")
+            .defineInRange("maxGroundShift", 2, 0, 64);
+
+    public static final ForgeConfigSpec.IntValue REFERENCE_CHUNKS = BUILDER
+            .comment("How far, in chunks, a structure may end up from its own start chunk.",
+                     "This is vanilla's constraint, not ours: ChunkGenerator collects a chunk's",
+                     "structure references from start chunks within 8 chunks, and a piece landing",
+                     "outside that window sits in a chunk that never learns the structure exists,",
+                     "so it silently fails to generate. 8 is vanilla's value and the safe one.",
+                     "Raising it needs a matching change to how references are collected, or",
+                     "structures WILL come out with pieces missing. Left configurable only so the",
+                     "cost of that change can be measured against a run that stays at 8.")
+            .defineInRange("referenceChunks", 8, 1, 8);
+
     public static final ForgeConfigSpec.DoubleValue RIVER_CHANNEL_FACTOR = BUILDER
             .comment("How much of a river counts as 'in it'. A column is wet when its distance",
                      "to the nearest river centreline is under width * this. 1.0 is the channel",
@@ -118,6 +152,24 @@ public final class AsyncRiversConfig {
         return probeStep;
     }
 
+    private static volatile int heightDelta = 16;
+
+    public static int riverMaxHeightDelta() {
+        return heightDelta;
+    }
+
+    private static volatile int maxShift = 2;
+
+    public static int maxGroundShift() {
+        return maxShift;
+    }
+
+    private static volatile int refChunks = 8;
+
+    public static int referenceChunks() {
+        return refChunks;
+    }
+
     private static volatile double channelFactor = 1.0;
 
     public static double riverChannelFactor() {
@@ -153,12 +205,17 @@ public final class AsyncRiversConfig {
         keepStructures = KEEP_STRUCTURES_NEAR_RIVERS.get();
         nudge = NUDGE_STRUCTURES_OFF_RIVERS.get();
         probeStep = RIVER_PROBE_STEP.get();
+        heightDelta = RIVER_MAX_HEIGHT_DELTA.get();
+        maxShift = MAX_GROUND_SHIFT.get();
+        refChunks = REFERENCE_CHUNKS.get();
         channelFactor = RIVER_CHANNEL_FACTOR.get();
         probeCompare = RIVER_PROBE_COMPARE.get();
         probeMaxSamples = RIVER_PROBE_MAX_SAMPLES.get();
         AsyncRivers.LOGGER.info("keepStructuresNearRivers = {} / nudgeStructuresOffRivers = {}"
-                        + " / riverProbe step {} maxSamples {} factor {} compare {}",
-                keepStructures, nudge, probeStep, probeMaxSamples, channelFactor, probeCompare);
+                        + " / riverProbe step {} maxSamples {} factor {} compare {} refChunks {}"
+                        + " maxGroundShift {} heightDelta {}",
+                keepStructures, nudge, probeStep, probeMaxSamples, channelFactor, probeCompare,
+                refChunks, maxShift, heightDelta);
     }
 
     private AsyncRiversConfig() {
