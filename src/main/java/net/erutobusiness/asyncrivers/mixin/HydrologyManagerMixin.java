@@ -134,7 +134,9 @@ public class HydrologyManagerMixin {
             net.minecraft.world.level.LevelHeightAccessor level,
             net.minecraft.world.level.levelgen.RandomState randomState,
             CallbackInfoReturnable<Boolean> cir) {
-        if (AsyncRiversConfig.keepStructuresNearRivers()) {
+        // ⚠ ずらし先を探している最中は、本当の答えを返させる（RiverProbe）
+        if (AsyncRiversConfig.keepStructuresNearRivers()
+                && !net.erutobusiness.asyncrivers.RiverProbe.asking()) {
             cir.setReturnValue(false);
         }
     }
@@ -155,7 +157,9 @@ public class HydrologyManagerMixin {
             net.minecraft.world.level.LevelHeightAccessor level,
             net.minecraft.world.level.levelgen.RandomState randomState,
             CallbackInfoReturnable<Boolean> cir) {
-        if (AsyncRiversConfig.keepStructuresNearRivers()) {
+        // ⚠ ずらし先を探している最中は、本当の答えを返させる（RiverProbe）
+        if (AsyncRiversConfig.keepStructuresNearRivers()
+                && !net.erutobusiness.asyncrivers.RiverProbe.asking()) {
             cir.setReturnValue(false);
         }
     }

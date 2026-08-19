@@ -6,7 +6,9 @@
   "refmap": "asyncrivers.refmap.json",
   "mixins": [
     "ModEventsMixin",
-    "HydrologyManagerMixin"
+    "HydrologyManagerMixin",
+    "StructureNudgeMixin",
+    "StructureStartAccessor"
   ],
   "injectors": {
     "defaultRequire": 1
