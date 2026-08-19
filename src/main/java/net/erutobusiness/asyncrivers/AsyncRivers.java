@@ -43,6 +43,8 @@ public class AsyncRivers {
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public AsyncRivers() {
+        net.minecraftforge.fml.ModLoadingContext.get().registerConfig(
+                net.minecraftforge.fml.config.ModConfig.Type.COMMON, AsyncRiversConfig.SPEC);
         net.minecraftforge.common.MinecraftForge.EVENT_BUS.register(this);
     }
 

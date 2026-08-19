@@ -2,6 +2,7 @@ package net.erutobusiness.asyncrivers.mixin;
 
 import com.AdamNew.dynamicwaters.HydrologyManager;
 import com.AdamNew.dynamicwaters.MountainRiverPath;
+import net.erutobusiness.asyncrivers.AsyncRiversConfig;
 import net.erutobusiness.asyncrivers.MountainRiverScheduler;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -22,9 +23,18 @@ import java.util.List;
  *       including the ones world generation carves, so a restart does not rebuild them.</li>
  * </ul>
  *
- * <p><b>Deliberately not touched:</b> {@code calculateRiverCarving}, {@code isNearRiver} and
- * {@code isTooCloseToRiver} also pass {@code cachedOnly = false}, but they are worldgen and run on
- * worldgen threads. Forcing them to the cached path would change the terrain that gets carved.
+ * <p>A third change is about structures rather than threads:
+ * {@link #asyncrivers$keepStructuresNearRivers} and {@link #asyncrivers$keepStructuresOffTheBank}
+ * switch off Dynamic Waters' rule that a structure generated near a river is thrown away. See
+ * {@link net.erutobusiness.asyncrivers.AsyncRiversConfig} for why that rule costs more than it
+ * protects.
+ *
+ * <p><b>Deliberately not touched:</b> {@code calculateRiverCarving} also passes
+ * {@code cachedOnly = false}, but it is worldgen and runs on worldgen threads. Forcing it to the
+ * cached path would change the terrain that gets carved. The same used to be written here about
+ * {@code isNearRiver} and {@code isTooCloseToRiver}; it was wrong about them. Read out of
+ * {@code dynamicwaters-11.1.2.jar}, the only caller of either is {@code StructureMixin} -- no
+ * carving path reaches them -- so what they answer cannot move a single block of terrain.
  */
 @Mixin(value = HydrologyManager.class, remap = false)
 public class HydrologyManagerMixin {
@@ -102,5 +112,51 @@ public class HydrologyManagerMixin {
             net.minecraft.world.level.levelgen.RandomState randomState,
             CallbackInfoReturnable<List<MountainRiverPath>> cir) {
         MountainRiverScheduler.rememberIfBuilt(regionX, regionZ, cir.getReturnValue());
+    }
+
+    /**
+     * Stops Dynamic Waters from deleting a structure that generated near a river (cheap pre-filter).
+     *
+     * <p>{@code StructureMixin} asks this first, with the structure's overall bounding box, and only
+     * does the per-piece work if the answer is yes. Answering no here therefore skips the whole
+     * check, including the mountain-river evaluation it would otherwise run once per structure
+     * start.
+     *
+     * <p>See {@link net.erutobusiness.asyncrivers.AsyncRiversConfig} for the measurements. In short:
+     * on seed K the deletion halo covers 23-61% of the surface depending on how big the structure
+     * is, while the rivers themselves cover 1.19%, and the carver already refuses to cut into a
+     * structure.
+     */
+    @Inject(method = "isNearRiver", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void asyncrivers$keepStructuresNearRivers(
+            int x, int z, int radius,
+            net.minecraft.world.level.chunk.ChunkGenerator generator,
+            net.minecraft.world.level.LevelHeightAccessor level,
+            net.minecraft.world.level.levelgen.RandomState randomState,
+            CallbackInfoReturnable<Boolean> cir) {
+        if (AsyncRiversConfig.keepStructuresNearRivers()) {
+            cir.setReturnValue(false);
+        }
+    }
+
+    /**
+     * The same for the exact check, which {@code StructureMixin} runs on the whole bounding box and
+     * then on every piece in turn.
+     *
+     * <p>Both hooks are needed. The pre-filter above is not a guard the exact check sits behind:
+     * {@code StructureMixin} calls this one directly for each piece as well, so leaving it alone
+     * would keep deleting multi-piece structures -- exactly the villages and towers this is meant
+     * to keep.
+     */
+    @Inject(method = "isTooCloseToRiver", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void asyncrivers$keepStructuresOffTheBank(
+            int minX, int maxX, int minZ, int maxZ, int minY, int maxY,
+            net.minecraft.world.level.chunk.ChunkGenerator generator,
+            net.minecraft.world.level.LevelHeightAccessor level,
+            net.minecraft.world.level.levelgen.RandomState randomState,
+            CallbackInfoReturnable<Boolean> cir) {
+        if (AsyncRiversConfig.keepStructuresNearRivers()) {
+            cir.setReturnValue(false);
+        }
     }
 }
