@@ -8,7 +8,8 @@
     "ModEventsMixin",
     "HydrologyManagerMixin",
     "StructureNudgeMixin",
-    "StructureStartAccessor"
+    "StructureStartAccessor",
+    "LoginGateMixin"
   ],
   "injectors": {
     "defaultRequire": 1

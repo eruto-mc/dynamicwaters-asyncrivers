@@ -23,6 +23,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Runs Dynamic Waters' mountain-river region generation off the server thread.
@@ -74,8 +75,51 @@ public final class MountainRiverScheduler {
      */
     private static final Map<UUID, Set<Long>> CLAIMED = new ConcurrentHashMap<>();
 
+    /**
+     * 先読みの残りがこれを超えている間は参加を断る（2026-08-21 追加）。
+     *
+     * <p>⚠ <b>0 にしない.</b> 記録が温まっている起動では先読みは1秒ほどで終わるので、
+     * そこで断ると<b>邪魔なだけ</b>になる。断りたいのは「焼きたての世界の初回起動」で、
+     * そこは実装の見積もりで<b>無人でも約8分</b>かかる（半径1,719＝約196リージョン）。
+     *
+     * <p>⚠ <b>なぜ断るのか.</b> 先読みが終わる前に入ると、その人の周りの山岳河川は
+     * <b>その場で作られる</b>——サーバは固まらないが<b>地形が来るのを待つ</b>ことになり、
+     * 症状は「入れたのに地形が来ない」。⚠ <b>それが何なのか、入った人には分からない</b>。
+     * 断って理由と残りを伝えるほうが、黙って待たせるより短く済む。
+     */
+    private static final int JOIN_GATE_REGIONS = 20;
+
     private static volatile ExecutorService workers;
     private static volatile int workerCount = 1;
+
+    /** 先読みの進み具合。⚠ 参加を断るかの判断と、断り文の中身に使う。 */
+    private static volatile boolean preWarmActive;
+    private static volatile int preWarmDone;
+    private static volatile int preWarmPlanned;
+
+    /** 人が居るかを数えるため。⚠ 記録を出す側（ワーカースレッド）から呼ばれる。 */
+    private static volatile MinecraftServer serverRef;
+
+    /** 冷たいリージョンを作った記録の間引き。⚠ 1リージョンごとに出すと記録が埋まる。 */
+    private static final AtomicLong LAST_COLD_WARN = new AtomicLong();
+    private static final AtomicInteger COLD_SINCE_WARN = new AtomicInteger();
+
+    /** 先読みの残り（リージョン）。走っていなければ 0。 */
+    public static int preWarmRemaining() {
+        return preWarmActive ? Math.max(0, preWarmPlanned - preWarmDone) : 0;
+    }
+
+    /** 先読みが覆う予定の総数。断り文で「残り N / M」と出すため。 */
+    public static int preWarmPlanned() {
+        return preWarmPlanned;
+    }
+
+    /**
+     * いま参加を断るべきか。⚠ <b>断るのは先読みに実のある残りがあるときだけ</b>。
+     */
+    public static boolean joinShouldWait() {
+        return preWarmRemaining() > JOIN_GATE_REGIONS;
+    }
 
     /** Disk-backed region store. {@code null} means "compute every time", which is still correct. */
     private static volatile MountainRegionStore store;
@@ -148,7 +192,41 @@ public final class MountainRiverScheduler {
         if (s == null || paths == null) {
             return;                 // 起動前・保存できない構成なら何もしない（今までどおり動く）
         }
-        s.writeIfAbsent(regionX, regionZ, paths);
+        if (s.writeIfAbsent(regionX, regionZ, paths)) {
+            warnIfPlayersOnline(regionX, regionZ);
+        }
+    }
+
+    /**
+     * ⚠⚠ <b>人が居るのに冷たいリージョンを作り始めたら、記録に1行出す</b>（2026-08-21 追加）。
+     *
+     * <p>⚠ <b>掘る処理は止められない</b>（チャンクは作り終えないと送れないし、川の計算だけ
+     * 飛ばすとその土地の地形が永久に変わる）。だから<b>せめて見えるようにする</b>。
+     *
+     * <p>2026-08-20 に、ボーダーの内側に未生成の土地が入っていたせいで
+     * <b>サーバスレッドが 217 秒止まった</b>。⚠ <b>そのとき記録には何も出ず</b>、
+     * 原因に辿り着くのに jstack が要った。この1行があれば最初の30秒で分かる。
+     *
+     * <p>⚠ 1リージョンごとに出すと記録が埋まるので、30秒に1行へ間引き、
+     * その間の件数を一緒に出す。
+     */
+    private static void warnIfPlayersOnline(int regionX, int regionZ) {
+        MinecraftServer s = serverRef;
+        if (s == null || s.getPlayerList().getPlayerCount() <= 0) {
+            return;
+        }
+        COLD_SINCE_WARN.incrementAndGet();
+        long now = System.currentTimeMillis();
+        long last = LAST_COLD_WARN.get();
+        if (now - last < 30_000L || !LAST_COLD_WARN.compareAndSet(last, now)) {
+            return;
+        }
+        AsyncRivers.LOGGER.warn(
+                "Async Rivers: 人が居るあいだに冷たいリージョン {},{} を作った（直近で {} 個）。"
+                        + "⚠ 掘る処理は止められないので、その間サーバスレッドが待つ。"
+                        + "生成済みの外へ出ていないか、ワールドボーダーを確かめる"
+                        + "（py server/play_ctl.py border）",
+                regionX, regionZ, COLD_SINCE_WARN.getAndSet(0));
     }
 
     private MountainRiverScheduler() {
@@ -274,6 +352,12 @@ public final class MountainRiverScheduler {
             }
         }
         final int planned = order.size();
+        // ⚠ **断るかどうかの判断に使うので、投げる前に立てる**（2026-08-21）。
+        //    ⚠ 立てたら必ず倒す——下の finally で倒している。倒し忘れると誰も入れなくなる。
+        serverRef = server;
+        preWarmPlanned = planned;
+        preWarmDone = 0;
+        preWarmActive = true;
         if (planned < total) {
             AsyncRivers.LOGGER.info(
                     "Async Rivers: pre-warming the innermost {} of the {} regions inside the world border "
@@ -287,53 +371,60 @@ public final class MountainRiverScheduler {
                     planned, radius);
         }
 
-        for (int i = 0; i < order.size(); i += workerCount) {
-            if (Thread.currentThread().isInterrupted() || workers == null) {
-                return;
-            }
-            // Autopause と同じ約束: 人が居る間は進めない
-            while (server.getPlayerList().getPlayerCount() > 0) {
-                if (!wasPaused) {
-                    AsyncRivers.LOGGER.info("Async Rivers: player online — pre-warm paused at {} / {} regions.",
+        // ⚠⚠ **どこから抜けても preWarmActive を倒す**（2026-08-21）。
+        //    途中の return が4つあるので、倒し忘れると**参加を断ったまま誰も入れなくなる**。
+        try {
+            for (int i = 0; i < order.size(); i += workerCount) {
+                if (Thread.currentThread().isInterrupted() || workers == null) {
+                    return;
+                }
+                // Autopause と同じ約束: 人が居る間は進めない
+                while (server.getPlayerList().getPlayerCount() > 0) {
+                    if (!wasPaused) {
+                        AsyncRivers.LOGGER.info("Async Rivers: player online — pre-warm paused at {} / {} regions.",
+                                done, planned);
+                        wasPaused = true;
+                    }
+                    try {
+                        Thread.sleep(5000L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                if (wasPaused) {
+                    AsyncRivers.LOGGER.info("Async Rivers: server empty again — pre-warm resumed at {} / {} regions.",
                             done, planned);
-                    wasPaused = true;
+                    wasPaused = false;
                 }
-                try {
-                    Thread.sleep(5000L);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            }
-            if (wasPaused) {
-                AsyncRivers.LOGGER.info("Async Rivers: server empty again — pre-warm resumed at {} / {} regions.",
-                        done, planned);
-                wasPaused = false;
-            }
 
-            // ワーカーの本数ぶんまとめて投げ、全部そろってから次へ（進み具合を数えられるように）
-            List<Future<?>> batch = new ArrayList<>();
-            for (int j = i; j < Math.min(i + workerCount, order.size()); j++) {
-                int[] r = order.get(j);
-                batch.add(pool.submit(() -> obtain(r[0], r[1], generator, level, randomState)));
-            }
-            for (Future<?> f : batch) {
-                try {
-                    f.get();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                } catch (Throwable t) {
-                    AsyncRivers.LOGGER.warn("Async Rivers: a pre-warmed region failed to build", t);
+                // ワーカーの本数ぶんまとめて投げ、全部そろってから次へ（進み具合を数えられるように）
+                List<Future<?>> batch = new ArrayList<>();
+                for (int j = i; j < Math.min(i + workerCount, order.size()); j++) {
+                    int[] r = order.get(j);
+                    batch.add(pool.submit(() -> obtain(r[0], r[1], generator, level, randomState)));
                 }
-                done++;
+                for (Future<?> f : batch) {
+                    try {
+                        f.get();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    } catch (Throwable t) {
+                        AsyncRivers.LOGGER.warn("Async Rivers: a pre-warmed region failed to build", t);
+                    }
+                    done++;
+                    preWarmDone = done;          // ⚠ 断り文の「残り N / M」に出る
+                }
+                if (done % 25 < workerCount) {
+                    AsyncRivers.LOGGER.info("Async Rivers: pre-warmed {} / {} regions.", done, planned);
+                }
             }
-            if (done % 25 < workerCount) {
-                AsyncRivers.LOGGER.info("Async Rivers: pre-warmed {} / {} regions.", done, planned);
-            }
+            AsyncRivers.LOGGER.info("Async Rivers: pre-warm finished ({} regions). Joins inside the border no longer "
+                    + "wait for mountain rivers to be built.", done);
+        } finally {
+            preWarmActive = false;
         }
-        AsyncRivers.LOGGER.info("Async Rivers: pre-warm finished ({} regions). Joins inside the border no longer "
-                + "wait for mountain rivers to be built.", done);
     }
 
     /**

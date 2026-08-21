@@ -192,15 +192,21 @@ public final class MountainRegionStore {
      * too. Checking the stamp matters: a file left over from a different seed or a different
      * Dynamic Waters version is not "already there", it is something to replace.
      */
-    public void writeIfAbsent(int regionX, int regionZ, List<MountainRiverPath> paths) {
+    /**
+     * @return ⚠ <b>このリージョンを今回はじめて書いたときだけ true</b>（2026-08-21 に返り値を足した）。
+     *         呼ぶ側が「冷たいリージョンを作った」を見分けるために使う。
+     *         記録に在ったものを読み直しただけなら false。
+     */
+    public boolean writeIfAbsent(int regionX, int regionZ, List<MountainRiverPath> paths) {
         if (onDisk.contains(key(regionX, regionZ))) {
-            return;                                   // 一番多い経路。ファイルには触らない
+            return false;                             // 一番多い経路。ファイルには触らない
         }
         if (hasCurrent(regionX, regionZ)) {
             onDisk.add(key(regionX, regionZ));        // 前の起動で書いたもの。以後は上の行で済む
-            return;
+            return false;
         }
         write(regionX, regionZ, paths);
+        return true;
     }
 
     /** True when a file exists for this region and carries our stamp. */
