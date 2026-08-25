@@ -75,24 +75,10 @@ public final class MountainRiverScheduler {
      */
     private static final Map<UUID, Set<Long>> CLAIMED = new ConcurrentHashMap<>();
 
-    /**
-     * 先読みの残りがこれを超えている間は参加を断る（2026-08-21 追加）。
-     *
-     * <p>⚠ <b>0 にしない.</b> 記録が温まっている起動では先読みは1秒ほどで終わるので、
-     * そこで断ると<b>邪魔なだけ</b>になる。断りたいのは「焼きたての世界の初回起動」で、
-     * そこは実装の見積もりで<b>無人でも約8分</b>かかる（半径1,719＝約196リージョン）。
-     *
-     * <p>⚠ <b>なぜ断るのか.</b> 先読みが終わる前に入ると、その人の周りの山岳河川は
-     * <b>その場で作られる</b>——サーバは固まらないが<b>地形が来るのを待つ</b>ことになり、
-     * 症状は「入れたのに地形が来ない」。⚠ <b>それが何なのか、入った人には分からない</b>。
-     * 断って理由と残りを伝えるほうが、黙って待たせるより短く済む。
-     */
-    private static final int JOIN_GATE_REGIONS = 20;
-
     private static volatile ExecutorService workers;
     private static volatile int workerCount = 1;
 
-    /** 先読みの進み具合。⚠ 参加を断るかの判断と、断り文の中身に使う。 */
+    /** 先読みの進み具合。⚠ 入った人へ知らせる文と、記録に出す残りに使う。 */
     private static volatile boolean preWarmActive;
     private static volatile int preWarmDone;
     private static volatile int preWarmPlanned;
@@ -109,16 +95,37 @@ public final class MountainRiverScheduler {
         return preWarmActive ? Math.max(0, preWarmPlanned - preWarmDone) : 0;
     }
 
-    /** 先読みが覆う予定の総数。断り文で「残り N / M」と出すため。 */
+    /** 先読みが覆う予定の総数。知らせる文で「残り N / M」と出すため。 */
     public static int preWarmPlanned() {
         return preWarmPlanned;
     }
 
     /**
-     * いま参加を断るべきか。⚠ <b>断るのは先読みに実のある残りがあるときだけ</b>。
+     * 入った人へ、先読みが一時停止したことを知らせる（2026-08-25 に断る形から替えた）。
+     *
+     * <p>⚠⚠ <b>2026-08-21 から 08-25 まで、ここは「参加を断る」だった</b>
+     * （{@code LoginGateMixin}）。⚠ <b>断ると、下の一時停止・再開が一度も起きない</b>——
+     * 人が入れないのだから「人が居る間は進めない」に到達しようがない。
+     * 2つの仕組みが噛み合っておらず、⚠ <b>実際にレンタルで70分ぶん誰も入れなかった</b>。
+     *
+     * <p>⚠ <b>断りたかった理由は消えていない</b>: 先読みが終わる前に入ると、その人の周りの
+     * 山岳河川は<b>その場で作られる</b>ので「入れたのに地形が来ない」に見える。
+     * ⚠ <b>それが何なのか入った人には分からない</b>のが本当の問題だったので、
+     * <b>断る代わりに伝える</b>。先読みは Chunky の Autopause と同じく自動で止まるので、
+     * その人のためのチャンクづくりに資源が回る。
      */
-    public static boolean joinShouldWait() {
-        return preWarmRemaining() > JOIN_GATE_REGIONS;
+    public static void noticeOnJoin(net.minecraft.server.level.ServerPlayer player) {
+        int left = preWarmRemaining();
+        if (left <= 0) {
+            return;
+        }
+        int planned = preWarmPlanned();
+        AsyncRivers.LOGGER.info("Async Rivers: 人が入ったので先読みを止める（{} ／ 残り {} / {} リージョン）",
+                player.getGameProfile().getName(), left, planned);
+        player.sendSystemMessage(net.minecraft.network.chat.Component.literal(
+                "[地形] 下ごしらえを一時停止しました（残り " + left + " / " + planned + " リージョン）。\n"
+                        + "⚠ 遠くへ行くと地形が出てくるのを待つことがあります。"
+                        + "全員が抜けると自動で続きから再開します。"));
     }
 
     /** Disk-backed region store. {@code null} means "compute every time", which is still correct. */

@@ -67,6 +67,14 @@ public class AsyncRivers {
     }
 
     @SubscribeEvent
+    public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
+        // ⚠ 断るのをやめた代わりに知らせる（2026-08-25）。止めるのは先読みの側が自分でやる。
+        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer sp) {
+            MountainRiverScheduler.noticeOnJoin(sp);
+        }
+    }
+
+    @SubscribeEvent
     public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         MountainRiverScheduler.forget(event.getEntity().getUUID());
     }
