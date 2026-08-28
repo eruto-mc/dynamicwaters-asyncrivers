@@ -59,6 +59,17 @@ public class AsyncRivers {
         //    are only settled once the server has finished loading it.
         MountainRiverScheduler.startPreWarm(event.getServer(),
                 event.getServer().getLevel(Level.OVERWORLD));
+
+        // ⚠⚠ **覚えた地面の高さが、計算した高さと同じであることを、ここで一度だけ確かめる**
+        //    （2026-08-28）。⚠ 控えが当たるのは走査が重なったときだけなので、
+        //    ⚠ **黙って待つと「確かめていない」と「合っていた」が見分けられない。**
+        //    ⚠ 数十列ぶんなので数秒。⚠ **陽性対照（わざと壊した1件）つき。**
+        net.minecraft.server.level.ServerLevel overworld =
+                event.getServer().getLevel(Level.OVERWORLD);
+        if (overworld != null) {
+            GroundCache.selfTest(overworld.getChunkSource().getGenerator(), overworld,
+                    overworld.getChunkSource().randomState(), 24);
+        }
     }
 
     @SubscribeEvent
