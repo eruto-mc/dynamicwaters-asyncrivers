@@ -205,9 +205,12 @@ public abstract class StructureNudgeMixin {
             ASYNCRIVERS$LOG.info(
                     "stayed: {} at {} already the driest, {} wet under it,"
                             + " {} candidates fit, {} refused by ground,"
-                            + " area water {}/{}, proximity {}/{} (step {})",
+                            + " area water {}/{}, proximity {}/{} (step {}),"
+                            + " ground {}/{} sampled (cache {}%)",
                     start.getStructure(), chunkPos, here, fits, refusedByGround,
-                    mask.wetCount(), mask.size(), mask.nearCount(), mask.size(), mask.step());
+                    mask.wetCount(), mask.size(), mask.nearCount(), mask.size(), mask.step(),
+                    mask.groundSampled(), mask.size(), net.erutobusiness.asyncrivers.GroundCache
+                            .hitRate());
             return;
         }
 
@@ -222,9 +225,12 @@ public abstract class StructureNudgeMixin {
         ASYNCRIVERS$LOG.info(
                 "moved {} at {} by {},{}: {} -> {} wet under it,"
                         + " {} candidates fit, {} refused by ground,"
-                        + " area water {}/{}, proximity {}/{} (step {})",
+                        + " area water {}/{}, proximity {}/{} (step {}),"
+                        + " ground {}/{} sampled (cache {}%)",
                 start.getStructure(), chunkPos, bestDx, bestDz, here, bestWet, fits,
                 refusedByGround,
-                mask.wetCount(), mask.size(), mask.nearCount(), mask.size(), mask.step());
+                mask.wetCount(), mask.size(), mask.nearCount(), mask.size(), mask.step(),
+                mask.groundSampled(), mask.size(), net.erutobusiness.asyncrivers.GroundCache
+                        .hitRate());
     }
 }

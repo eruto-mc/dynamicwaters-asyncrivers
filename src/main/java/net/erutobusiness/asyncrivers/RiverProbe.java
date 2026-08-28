@@ -72,7 +72,8 @@ public final class RiverProbe {
      * counts came back 296/609 where they should have been far apart, and only the identical
      * figures gave it away.
      */
-    public static boolean inRiverChannel(int x, int z, double factor, int groundY,
+    public static boolean inRiverChannel(int x, int z, double factor,
+                                         java.util.function.IntSupplier groundY,
                                          int maxHeightDelta, ChunkGenerator generator,
                                          LevelHeightAccessor level, RandomState randomState) {
         RAW.set(Boolean.TRUE);
@@ -81,9 +82,16 @@ public final class RiverProbe {
             // ⚠⚠ **高さを見る。** `evaluateRiverContext` は引数に Y を取らない＝水平だけの問い。
             //    高さを見ないと、**谷底の川が真上の山頂を「川の上」にしてしまう**。
             //    平地の川は海面に彫られるので、そこと比べる。
+            //
+            // ⚠⚠ **高さは、横の距離を通った列でしか採らない**（2026-08-28）。
+            //    ⚠ `groundY` が値ではなく**呼ぶと採る形**になっているのはそのため。
+            //    ⚠ 地面の高さ1列は約 28ms（`GroundCache` の説明）で、⚠ **川の近くの列は
+            //    全体の 18〜35%**。⚠ 残りの列では**そもそも高さが結論に効かない**——
+            //    `&&` の左が偽なら右は評価されないので、⚠ **書き方を変えるだけで採らずに済む。**
             if (river != null && river.bestFractal != null
                     && river.distance < river.width * factor
-                    && Math.abs(groundY - HydrologyManager.getSeaLevel()) <= maxHeightDelta) {
+                    && Math.abs(groundY.getAsInt() - HydrologyManager.getSeaLevel())
+                            <= maxHeightDelta) {
                 return true;
             }
             HydrologyManager.MountainRiverContext mountain =
@@ -92,7 +100,7 @@ public final class RiverProbe {
             // ⚠ 山岳河川は自分の高さ（bestY）を持っている。これも使っていなかった。
             return mountain != null && mountain.bestPath != null
                     && mountain.distance < mountain.width * factor
-                    && Math.abs(groundY - mountain.bestY) <= maxHeightDelta;
+                    && Math.abs(groundY.getAsInt() - mountain.bestY) <= maxHeightDelta;
         } catch (RuntimeException | LinkageError e) {
             if (FELL_BACK.compareAndSet(false, true)) {
                 LOG.warn("⚠ inRiverChannel が使えないので近接判定に退避する"
