@@ -19,6 +19,7 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
@@ -117,6 +118,85 @@ public abstract class StructureNudgeMixin {
                 && SectionPos.blockToSectionCoord(box.maxZ()) <= start.z + r;
     }
 
+    /**
+     * Whether to pick twice — once cheaply, once the old way — and complain if they differ.
+     *
+     * <p>Reordering two checks that are ANDed together cannot change which candidate wins, and
+     * saying so is easy. Proving it on a real world is what this switch is for. It doubles the
+     * work while on, so it is meant for one run, not for shipping. {@code asyncriversVerifyOrder}.
+     */
+    @Unique
+    private static final boolean ASYNCRIVERS$VERIFY_ORDER =
+            Boolean.getBoolean("asyncriversVerifyOrder");
+
+    /**
+     * Picks where the structure should move to, as {dx, dz, wet, considered, refusedByGround}.
+     *
+     * <p><b>Why the order of the two tests matters.</b> A candidate is taken only when it is
+     * both drier than the best so far <i>and</i> lands on ground close enough to the original.
+     * That is an AND, so the winner does not depend on which half is asked first — but the cost
+     * does, enormously. Asking "does the ground move too much" first means measuring ground for
+     * all 48 candidates, and each cell of that measurement can cost a surface-height query.
+     * Asking "is it even drier" first is free — it reads the grid that was already sampled — and
+     * most candidates fail it, so their ground is never measured at all.
+     *
+     * <p>Measured before the swap on {@code VolcanoStructure} at chunk [367, 288]:
+     * <b>1313 of 1764</b> columns needed a height, with 47 candidates passing the ground test.
+     *
+     * @param oldOrder ask the expensive question first, the way this did before 3.4.0
+     */
+    @Unique
+    private int[] asyncrivers$choose(RiverMask mask, BoundingBox box, ChunkPos chunkPos,
+                                     int reach, int here, boolean oldOrder) {
+        int bestWet = here;
+        int bestDx = 0;
+        int bestDz = 0;
+        int fits = 0;
+        int refusedByGround = 0;
+        for (int stride = ASYNCRIVERS$STEP; stride <= reach; stride += ASYNCRIVERS$STEP) {
+            for (int[] dir : ASYNCRIVERS$DIRS) {
+                int dx = dir[0] * stride;
+                int dz = dir[1] * stride;
+                BoundingBox moved = box.moved(dx, 0, dz);
+                // ⚠ 予算を先に丸めず、候補ごとに**バニラの窓に収まるか**を直接見る。
+                if (!asyncrivers$withinReferenceRange(moved, chunkPos)) {
+                    continue;
+                }
+                int wet = mask.wetCountIn(moved);
+                if (oldOrder) {
+                    // ⚠⚠ **地面が動く先へは移さない。** move() は水平にしか動かさないので、
+                    //    地面の高さが変われば家がその分だけ埋まる／浮く。
+                    //    山岳村を +32,+32 動かして地面が +5 上がり、家が全部沈んだ。
+                    if (mask.groundShift(box, dx, dz) > AsyncRiversConfig.maxGroundShift()) {
+                        refusedByGround++;
+                        continue;
+                    }
+                    fits++;
+                    if (wet < bestWet) {
+                        bestWet = wet;
+                        bestDx = dx;
+                        bestDz = dz;
+                    }
+                } else {
+                    // ⚠ **勝てない候補に、高い問いを投げない**（3.4.0）。
+                    //    ⚠ 同点なら近いほうが勝つ規則も、`<` のままなので変わらない。
+                    if (wet >= bestWet) {
+                        continue;
+                    }
+                    if (mask.groundShift(box, dx, dz) > AsyncRiversConfig.maxGroundShift()) {
+                        refusedByGround++;
+                        continue;
+                    }
+                    fits++;
+                    bestWet = wet;
+                    bestDx = dx;
+                    bestDz = dz;
+                }
+            }
+        }
+        return new int[] {bestDx, bestDz, bestWet, fits, refusedByGround};
+    }
+
     @Inject(method = "generate", at = @At("RETURN"))
     private void asyncrivers$nudgeOffRiver(
             RegistryAccess registries, ChunkGenerator generator, BiomeSource biomeSource,
@@ -169,36 +249,29 @@ public abstract class StructureNudgeMixin {
         //    ゼロを条件にしていた版では、小さい構造物は9件動いたのに**村は1件も動かなかった**。
         //    周りが 15% 濡れているだけで、80x120 の箱は候補すべてでどこかが川に当たるため。
         //    近い候補から順に見て、**厳密に良いときだけ**更新するので、同点なら近いほうが勝つ。
-        int bestWet = here;
-        int bestDx = 0;
-        int bestDz = 0;
-        int fits = 0;
-        int refusedByGround = 0;
-        for (int stride = ASYNCRIVERS$STEP; stride <= reach; stride += ASYNCRIVERS$STEP) {
-            for (int[] dir : ASYNCRIVERS$DIRS) {
-                int dx = dir[0] * stride;
-                int dz = dir[1] * stride;
-                BoundingBox moved = box.moved(dx, 0, dz);
-                // ⚠ 予算を先に丸めず、候補ごとに**バニラの窓に収まるか**を直接見る。
-                if (!asyncrivers$withinReferenceRange(moved, chunkPos)) {
-                    continue;
-                }
-                // ⚠⚠ **地面が動く先へは移さない。** move() は水平にしか動かさないので、
-                //    地面の高さが変われば家がその分だけ埋まる／浮く。
-                //    山岳村を +32,+32 動かして地面が +5 上がり、家が全部沈んだ。
-                if (mask.groundShift(box, dx, dz) > AsyncRiversConfig.maxGroundShift()) {
-                    refusedByGround++;
-                    continue;
-                }
-                fits++;
-                int wet = mask.wetCountIn(moved);
-                if (wet < bestWet) {
-                    bestWet = wet;
-                    bestDx = dx;
-                    bestDz = dz;
-                }
+        int[] chosen = asyncrivers$choose(mask, box, chunkPos, reach, here, false);
+        // ⚠⚠ **確かめる回だけ、古い順序でも選び直して突き合わせる**（2026-08-28）。
+        //    ⚠ 「見る順を変えても選ぶ先は同じ」は読めば分かるが、⚠ **読んだだけでは証拠にならない。**
+        //    ⚠ 合わなければ ERROR で名指しし、⚠ **古い順序の答えを採る**（安全側）。
+        if (ASYNCRIVERS$VERIFY_ORDER) {
+            int[] old = asyncrivers$choose(mask, box, chunkPos, reach, here, true);
+            if (old[0] != chosen[0] || old[1] != chosen[1] || old[2] != chosen[2]) {
+                ASYNCRIVERS$LOG.error(
+                        "⚠⚠ 候補の選び方が順序で変わった: {} at {} — 速い順 ({},{}) 濡れ {}"
+                                + " ／ 元の順 ({},{}) 濡れ {}。⚠ **元の順を採る。**",
+                        start.getStructure(), chunkPos,
+                        chosen[0], chosen[1], chosen[2], old[0], old[1], old[2]);
+                chosen = old;
+            } else {
+                ASYNCRIVERS$LOG.info("候補の選び方は順序で変わらなかった: {} at {} → ({},{}) 濡れ {}",
+                        start.getStructure(), chunkPos, chosen[0], chosen[1], chosen[2]);
             }
         }
+        int bestDx = chosen[0];
+        int bestDz = chosen[1];
+        int bestWet = chosen[2];
+        int fits = chosen[3];
+        int refusedByGround = chosen[4];
 
         if (bestDx == 0 && bestDz == 0) {
             // ⚠ 黙って諦めると「ずらしが効いていない」と「動いても良くならない」の区別がつかない。
