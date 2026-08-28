@@ -48,6 +48,16 @@ public final class GroundCache {
     private static final Map<ChunkGenerator, Map<Long, Integer>> BY_GENERATOR =
             new WeakHashMap<>();
 
+    /**
+     * The world height and random state each generator was first seen with.
+     *
+     * <p>Answers are keyed on the generator and the column, which is only sound if a generator
+     * always comes with the same height accessor and random state — true for a dimension, and
+     * an assumption everywhere else. Rather than write the assumption down and hope, the entries
+     * are kept so the assumption can be checked every time and the cache dropped if it breaks.
+     */
+    private static final Map<ChunkGenerator, Object[]> OWNER = new WeakHashMap<>();
+
     /** How many answers were reused, and how many had to be computed. Logged on request. */
     private static long hits;
     private static long misses;
@@ -99,6 +109,21 @@ public final class GroundCache {
             if (map == null) {
                 map = new HashMap<>();
                 BY_GENERATOR.put(generator, map);
+                OWNER.put(generator, new Object[] {level, randomState});
+            } else {
+                // ⚠⚠ **鍵は列の座標と生成器だけ。** `level` と `randomState` は
+                //    **生成器ごとに1つ**という前提で入れていない。
+                //    ⚠ **前提は書いて終わりにせず、破れたら鳴らす。**
+                //    ⚠ もし別の高さや別の乱数で同じ生成器が使われたら、
+                //    ⚠ **覚えている答えは別の世界のもの**になり、村が違う場所へ動く。
+                Object[] had = OWNER.get(generator);
+                if (had != null && (had[0] != level || had[1] != randomState)) {
+                    AsyncRivers.LOGGER.error(
+                            "⚠⚠ 同じ生成器が別の世界の設定で使われた。"
+                                    + "⚠ **控えを捨てる**（覚えていた答えは別の世界のもの）");
+                    map.clear();
+                    OWNER.put(generator, new Object[] {level, randomState});
+                }
             }
         }
         synchronized (map) {
