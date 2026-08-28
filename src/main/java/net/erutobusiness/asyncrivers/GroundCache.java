@@ -45,7 +45,17 @@ public final class GroundCache {
      */
     private static final int MAX_PER_LEVEL = 1 << 18;
 
-    private static final Map<ChunkGenerator, Map<Long, Integer>> BY_GENERATOR =
+    /**
+     * Answers, kept separately for each random state.
+     *
+     * <p><b>Why the random state is a key and not an assumption.</b> 3.4.1 kept one map per
+     * generator and complained if the random state ever changed, on the reasoning that a
+     * dimension builds exactly one. ⚠ That reasoning was never checked — and the sibling
+     * assumption about the height accessor turned out to be wrong the same day, which is poor
+     * grounds for trusting this one. Keying on it removes the question: a different random state
+     * simply gets its own answers, and an unused one is collected.
+     */
+    private static final Map<RandomState, Map<ChunkGenerator, Map<Long, Integer>>> BY_RANDOM =
             new WeakHashMap<>();
 
     /**
@@ -95,6 +105,27 @@ public final class GroundCache {
     }
 
     /**
+     * What the cached answers actually depend on, besides the generator and the column.
+     *
+     * <p>{@code getBaseHeight} reads only the bottom and top of the world out of the height
+     * accessor, so two accessors describing the same dimension are interchangeable — and world
+     * generation hands out different ones freely. Comparing the objects themselves said "this is
+     * a different world" every time that happened. The random state is compared by identity
+     * because a dimension builds exactly one and never replaces it.
+     */
+    private static Object[] shapeOf(LevelHeightAccessor level, RandomState randomState) {
+        return new Object[] {level.getMinBuildHeight(), level.getMaxBuildHeight()};
+    }
+
+    /** Whether the remembered answers were computed for the world this call describes. */
+    private static boolean sameWorldShape(Object[] had, LevelHeightAccessor level,
+                                          RandomState randomState) {
+        return had.length == 2
+            && Integer.valueOf(level.getMinBuildHeight()).equals(had[0])
+            && Integer.valueOf(level.getMaxBuildHeight()).equals(had[1]);
+    }
+
+    /**
      * The surface height at this column, computed once per (dimension, column).
      *
      * <p>Callers must treat this exactly as they would treat calling the generator directly:
@@ -104,25 +135,43 @@ public final class GroundCache {
                                  RandomState randomState, int x, int z) {
         Long key = (((long) x) << 32) ^ (z & 0xFFFFFFFFL);
         Map<Long, Integer> map;
-        synchronized (BY_GENERATOR) {
-            map = BY_GENERATOR.get(generator);
+        synchronized (BY_RANDOM) {
+            // ⚠⚠ **乱数は鍵にする**（3.4.3）。⚠ 作り直されないという前提を**確かめられなかった**ので、
+            //    ⚠ **前提を要らなくした**——別の乱数が来れば、勝手に別の控えになる。
+            Map<ChunkGenerator, Map<Long, Integer>> byGen =
+                BY_RANDOM.computeIfAbsent(randomState, r -> new WeakHashMap<>());
+            map = byGen.get(generator);
             if (map == null) {
                 map = new HashMap<>();
-                BY_GENERATOR.put(generator, map);
-                OWNER.put(generator, new Object[] {level, randomState});
+                byGen.put(generator, map);
+                OWNER.put(generator, shapeOf(level, randomState));
             } else {
-                // ⚠⚠ **鍵は列の座標と生成器だけ。** `level` と `randomState` は
+                // ⚠⚠ **鍵は列の座標と生成器だけ。** 高さの入れ物と乱数は
                 //    **生成器ごとに1つ**という前提で入れていない。
                 //    ⚠ **前提は書いて終わりにせず、破れたら鳴らす。**
                 //    ⚠ もし別の高さや別の乱数で同じ生成器が使われたら、
                 //    ⚠ **覚えている答えは別の世界のもの**になり、村が違う場所へ動く。
+                //
+                // ⚠⚠ **比べるのは「同じオブジェクトか」ではなく「同じ値か」**（2026-08-28 に直した）。
+                //    ⚠ 3.4.1 では `level != had[0]` と**入れ物の同一性**で見ていた。
+                //    ⚠⚠ **ワールド生成は次元が同じでも別の入れ物を渡してくる**ので、
+                //    ⚠ **正しい状態なのに鳴って控えを捨てていた**（新規ワールドを作る検査で実際に1本出た）。
+                //    ⚠ `getBaseHeight` が高さの入れ物から使うのは
+                //    **最低の高さ**と**高さ**だけなので、⚠ **その2つを比べれば足りる。**
+                //
+                // ⚠⚠ **乱数はここで比べない**（3.4.3）。⚠ 3.4.2 では「次元ごとに1つ作られ、
+                //    作り直されない」と書いて同一性で見ていたが、⚠⚠ **それは確かめていない前提**だった。
+                //    ⚠ 同じ日に、その兄弟の前提（高さの入れ物）が**外れたばかり**なのに、
+                //    ⚠ もう片方を信じる理由が無い。⚠ **乱数は控えの鍵そのものにして、前提を要らなくした。**
                 Object[] had = OWNER.get(generator);
-                if (had != null && (had[0] != level || had[1] != randomState)) {
+                if (had != null && !sameWorldShape(had, level, randomState)) {
                     AsyncRivers.LOGGER.error(
-                            "⚠⚠ 同じ生成器が別の世界の設定で使われた。"
-                                    + "⚠ **控えを捨てる**（覚えていた答えは別の世界のもの）");
+                            "⚠⚠ 同じ生成器が別の世界の形で使われた（高さ {}..{} / 乱数 {}）。"
+                                    + "⚠ **控えを捨てる**（覚えていた答えは別の世界のもの）",
+                            level.getMinBuildHeight(), level.getMaxBuildHeight(),
+                            System.identityHashCode(randomState));
                     map.clear();
-                    OWNER.put(generator, new Object[] {level, randomState});
+                    OWNER.put(generator, shapeOf(level, randomState));
                 }
             }
         }
@@ -240,8 +289,9 @@ public final class GroundCache {
             long before = mismatches;
             Long key = (((long) xs[0]) << 32) ^ (zs[0] & 0xFFFFFFFFL);
             Map<Long, Integer> map;
-            synchronized (BY_GENERATOR) {
-                map = BY_GENERATOR.get(generator);
+            synchronized (BY_RANDOM) {
+                Map<ChunkGenerator, Map<Long, Integer>> byGen = BY_RANDOM.get(randomState);
+                map = byGen == null ? null : byGen.get(generator);
             }
             if (map != null) {
                 synchronized (map) {
