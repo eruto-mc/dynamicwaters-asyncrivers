@@ -127,6 +127,27 @@ public final class AsyncRiversConfig {
                      "trips, the coarser step is written into the 'gave up' log line.")
             .defineInRange("riverProbeMaxSamples", 4096, 64, 262144);
 
+    public static final ForgeConfigSpec.BooleanValue SKIP_SPAWN_CHECK_OFF_RIVER = BUILDER
+            .comment("Stop asking Dynamic Waters whether a mob spawn attempt is in a river when it",
+                     "cannot be. Its SpawningEvents.onPotentialSpawns calls getRiverFlow as its",
+                     "first statement, with no cheap test in front of it, and vanilla fires that",
+                     "event for every spawn attempt in every loaded chunk every tick.",
+                     "Measured on the club's server: 20.89 ms of a 34 ms tick with one player",
+                     "parked in dense mountain rivers; 93% of the difference between that spot and",
+                     "one with no rivers. On the rental with three players it was 38.45 ms/tick.",
+                     "Two tests are skipped, both of which Dynamic Waters itself implies:",
+                     "  - not the overworld. Its own carver returns early unless dimension() is",
+                     "    OVERWORLD, so no river exists anywhere else. The spawn side never checks:",
+                     "    its cache key is (x,z) with no dimension, and the handler passes a null",
+                     "    Level, so a Nether spawn reads the overworld's rivers.",
+                     "  - the block is not water. Everything river has that the surrounding land",
+                     "    biomes do not -- drowned, squid, salmon, glow squid -- is IN_WATER, so",
+                     "    none of them could spawn on dry land whether we ask or not.",
+                     "The one visible change: river's CREATURE list is empty, so today no cows or",
+                     "sheep spawn near a river channel. With this on they do again.",
+                     "false restores stock behaviour, for measuring against.")
+            .define("skipSpawnCheckOffRiver", true);
+
     public static final ForgeConfigSpec SPEC = BUILDER.build();
 
     /**
@@ -198,6 +219,16 @@ public final class AsyncRiversConfig {
         sync(event);
     }
 
+    /**
+     * Read on the server thread once per mob spawn attempt -- the hottest read in this mod -- so
+     * it is cached rather than fetched from the config each time.
+     */
+    private static volatile boolean skipSpawnCheck = true;
+
+    public static boolean skipSpawnCheckOffRiver() {
+        return skipSpawnCheck;
+    }
+
     private static void sync(ModConfigEvent event) {
         if (event.getConfig().getSpec() != SPEC) {
             return;
@@ -211,11 +242,12 @@ public final class AsyncRiversConfig {
         channelFactor = RIVER_CHANNEL_FACTOR.get();
         probeCompare = RIVER_PROBE_COMPARE.get();
         probeMaxSamples = RIVER_PROBE_MAX_SAMPLES.get();
+        skipSpawnCheck = SKIP_SPAWN_CHECK_OFF_RIVER.get();
         AsyncRivers.LOGGER.info("keepStructuresNearRivers = {} / nudgeStructuresOffRivers = {}"
                         + " / riverProbe step {} maxSamples {} factor {} compare {} refChunks {}"
-                        + " maxGroundShift {} heightDelta {}",
+                        + " maxGroundShift {} heightDelta {} / skipSpawnCheckOffRiver {}",
                 keepStructures, nudge, probeStep, probeMaxSamples, channelFactor, probeCompare,
-                refChunks, maxShift, heightDelta);
+                refChunks, maxShift, heightDelta, skipSpawnCheck);
     }
 
     private AsyncRiversConfig() {

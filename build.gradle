@@ -14,7 +14,7 @@ plugins {
 
 apply plugin: 'org.spongepowered.mixin'
 
-version = '3.4.3'
+version = '3.5.0'
 group = 'net.erutobusiness'
 base { archivesName = 'dynamicwaters_asyncrivers' }
 
